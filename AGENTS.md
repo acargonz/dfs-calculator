@@ -8,19 +8,27 @@ A sports betting edge calculator for NBA player props on DFS platforms
 Convert raw player data + platform odds into actionable over/under picks
 with mathematically grounded probability, EV, and stake sizing.
 
+Supports two workflows:
+1. **Batch mode** (default): Select today's NBA games → auto-fetch props + odds from The Odds API → auto-fetch player stats from balldontlie.io → batch calculate all edges → display sortable results table.
+2. **Single player mode**: Manual entry of one player at a time with custom odds/stats.
+
+Fallback: Paste text from any DFS app (PrizePicks, Underdog, Pick6) and the parser extracts player names, stat types, and lines automatically.
+
 ## Tech Stack
 - **Runtime:** Node.js 18+
 - **Framework:** Next.js 15 (App Router)
 - **Language:** TypeScript (strict mode)
 - **UI:** React 19 + Tailwind CSS v4
-- **Testing:** Jest + ts-jest + React Testing Library
+- **Testing:** Jest 29 + ts-jest + React Testing Library
+- **APIs:** The Odds API (games + props), balldontlie.io (player stats)
 
 ## Project Structure
 ```
 dfs-calculator/
 ├── AGENTS.md            ← YOU ARE HERE. Read this first, always.
 ├── CLAUDE.md            ← Quick reference for Claude Code sessions
-├── README.md            ← Human-readable setup and usage
+├── .env.local           ← API keys (git-ignored)
+├── .env.local.example   ← Template for API keys (committed)
 ├── package.json
 ├── tsconfig.json
 ├── jest.config.js
@@ -28,27 +36,43 @@ dfs-calculator/
 ├── postcss.config.mjs   ← Tailwind CSS v4 PostCSS plugin
 ├── src/
 │   ├── lib/
-│   │   └── math.ts      ← Pure math engine. ALL betting math lives here.
+│   │   ├── math.ts          ← Pure math engine (DO NOT modify without tests)
+│   │   ├── oddsApi.ts       ← Odds API types + transform functions
+│   │   ├── playerStats.ts   ← Player stats fetch + cache + position mapping
+│   │   ├── batchProcessor.ts ← Batch calculation engine
+│   │   └── parsers.ts       ← DFS text paste parser (PrizePicks, Underdog, etc.)
 │   ├── components/
-│   │   ├── Calculator.tsx    ← Orchestrator: state + math pipeline
-│   │   ├── PlayerForm.tsx    ← Input form with validation
-│   │   ├── ResultsDisplay.tsx ← Probability, EV, Kelly, tier output
-│   │   ├── TierBadge.tsx     ← Colored badge for confidence tier
-│   │   └── types.ts          ← Shared TypeScript interfaces
+│   │   ├── Calculator.tsx       ← Orchestrator: mode toggle, batch/single state
+│   │   ├── PlayerForm.tsx       ← Manual input form with validation
+│   │   ├── ResultsDisplay.tsx   ← Single player probability/EV/Kelly output
+│   │   ├── GameSelector.tsx     ← Game selection UI (fetches games on mount)
+│   │   ├── BatchResultsTable.tsx ← Sortable batch results table
+│   │   ├── PasteInput.tsx       ← DFS text paste with live preview
+│   │   ├── TierBadge.tsx        ← Colored badge for confidence tier
+│   │   └── types.ts             ← Shared TypeScript interfaces
 │   └── app/
-│       ├── layout.tsx    ← Root HTML layout
-│       ├── page.tsx      ← Renders <Calculator />
-│       └── globals.css   ← Tailwind import + body styles
+│       ├── layout.tsx       ← Root HTML layout
+│       ├── page.tsx         ← Renders <Calculator />
+│       ├── globals.css      ← CSS variables + Tailwind import
+│       └── api/
+│           ├── odds/route.ts         ← Odds API proxy (games + props)
+│           └── player-stats/route.ts ← balldontlie proxy (stats)
 └── __tests__/
-    ├── math.test.ts          ← 50 math tests
-    ├── PlayerForm.test.tsx   ← 10 form tests
-    └── Calculator.test.tsx   ← 15 pipeline + integration tests
+    ├── math.test.ts              ← 50 math tests
+    ├── PlayerForm.test.tsx       ← 10 form tests
+    ├── Calculator.test.tsx       ← 16 pipeline + integration tests
+    ├── oddsApi.test.ts           ← 10 API transform tests
+    ├── playerStats.test.ts       ← 14 position mapping tests
+    ├── batchProcessor.test.ts    ← 15 batch processing tests
+    ├── GameSelector.test.tsx     ← 9 game selector UI tests
+    ├── BatchResultsTable.test.tsx ← 9 results table tests
+    └── parsers.test.ts           ← 22 DFS text parser tests
 ```
 
 ## Important Commands
 ```bash
 npm install          # Install dependencies
-npm test             # Run all 75 tests — MUST pass before any change ships
+npm test             # Run all 155 tests — MUST pass before any change ships
 npm run dev          # Start local dev server at http://localhost:3000
 npm run build        # Production build (catches type errors)
 npm audit            # Check for security vulnerabilities (should be 0)
@@ -81,6 +105,29 @@ Player Mean + Std → modelCountingStat() or modelPoints()
                      ↓
               assignTier() → HIGH / MEDIUM / LOW / REJECT
 ```
+
+## Architecture — Batch Processing Pipeline
+```
+GameSelector → fetchGames() → user selects games
+                     ↓
+              fetchProps(eventId) → PlayerProp[] per game
+                     ↓
+              fetchPlayerStats(name) → PlayerSeasonAvg (cached)
+                     ↓
+              processBatch(props, fetchStatsFn)
+                  → for each prop: getStatMean → calculate() → result
+                     ↓
+              sortResults() → HIGH first, then EV desc
+                     ↓
+              BatchResultsTable → sortable, copyable results
+```
+
+## Architecture — API Routes
+- `/api/odds?type=games` → proxies The Odds API for today's NBA events
+- `/api/odds?type=props&eventId=xxx` → proxies The Odds API for player prop odds
+- `/api/player-stats?name=LeBron+James` → proxies balldontlie.io for season averages
+
+API keys are stored in `.env.local` (server-side only, never exposed to client).
 
 ## Key Math Decisions (and why)
 - **Probit de-vig** (not multiplicative or power): Handles heavy favourites
@@ -116,13 +163,25 @@ opportunity variance.
 | LOW    | ≥ 0.50   | ≥ 0.02  | any               |
 | REJECT | below LOW thresholds                      |
 
+## Environment Variables
+```
+ODDS_API_KEY=your_key_here        # The Odds API (https://the-odds-api.com)
+BALLDONTLIE_API_KEY=your_key_here # balldontlie.io
+```
+
+## Deployment
+This app is designed for Vercel deployment:
+1. Push to GitHub
+2. Connect repo in Vercel dashboard
+3. Set environment variables (ODDS_API_KEY, BALLDONTLIE_API_KEY)
+4. Deploy — Vercel auto-detects Next.js
+
 ## Known Constraints
-- This runs entirely client-side. No backend API calls for odds data (yet).
-- The user must manually input player means, lines, and odds.
 - CV table is NBA-specific. Other sports would need different calibration.
 - normCDF uses erfc-based approximation (max error < 1.5e-7).
+- Pasted DFS text defaults to -110/-110 odds since DFS apps don't show odds.
+- balldontlie.io has rate limits; player stats are cached in-memory per session.
 
 ## Cross-Platform Compatibility
 - Runs identically on macOS and Windows.
 - No OS-specific dependencies or scripts.
-- `jest --passWithNoTests` is the only test command (no node flags needed).

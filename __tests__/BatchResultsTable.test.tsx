@@ -1,0 +1,181 @@
+/** @jest-environment jsdom */
+import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import '@testing-library/jest-dom';
+import BatchResultsTable from '../src/components/BatchResultsTable';
+import type { BatchResult, BatchPlayerResult } from '../src/lib/batchProcessor';
+
+const mockWriteText = jest.fn().mockResolvedValue(undefined);
+
+function makePlayer(overrides: Partial<BatchPlayerResult> = {}): BatchPlayerResult {
+  return {
+    playerName: 'Test Player',
+    position: 'SF',
+    statType: 'points',
+    line: 24.5,
+    mean: 25.0,
+    overOdds: -110,
+    underOdds: -110,
+    result: {
+      tier: 'HIGH',
+      ev: 0.12,
+      blendedProb: 0.62,
+      fairOverProb: 0.52,
+      fairUnderProb: 0.48,
+      modelOverProb: 0.62,
+      modelUnderProb: 0.38,
+      kellyStake: 8.5,
+      kellyFraction: 0.25,
+      source: 'Binomial',
+    },
+    status: 'success',
+    ...overrides,
+  };
+}
+
+function makeResults(players: BatchPlayerResult[]): BatchResult {
+  const summary = { high: 0, medium: 0, low: 0, reject: 0, errors: 0 };
+  for (const p of players) {
+    if (p.status !== 'success' || !p.result) {
+      summary.errors++;
+    } else {
+      switch (p.result.tier) {
+        case 'HIGH': summary.high++; break;
+        case 'MEDIUM': summary.medium++; break;
+        case 'LOW': summary.low++; break;
+        case 'REJECT': summary.reject++; break;
+      }
+    }
+  }
+  return { players, summary };
+}
+
+describe('BatchResultsTable', () => {
+  const onClear = jest.fn();
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('renders summary counts', () => {
+    const players = [
+      makePlayer({ playerName: 'A', result: { ...makePlayer().result!, tier: 'HIGH' } }),
+      makePlayer({ playerName: 'B', result: { ...makePlayer().result!, tier: 'MEDIUM' } }),
+      makePlayer({ playerName: 'C', result: { ...makePlayer().result!, tier: 'REJECT', ev: -0.05, kellyStake: 0 } }),
+    ];
+    render(<BatchResultsTable results={makeResults(players)} onClear={onClear} />);
+
+    expect(screen.getByText('1 HIGH')).toBeInTheDocument();
+    expect(screen.getByText('1 MEDIUM')).toBeInTheDocument();
+    expect(screen.getByText('1 REJECT')).toBeInTheDocument();
+    expect(screen.getByText('(3 total)')).toBeInTheDocument();
+  });
+
+  it('renders player rows with correct data', () => {
+    const players = [makePlayer({ playerName: 'LeBron James', mean: 27.5, line: 26.5 })];
+    render(<BatchResultsTable results={makeResults(players)} onClear={onClear} />);
+
+    expect(screen.getByText('LeBron James')).toBeInTheDocument();
+    expect(screen.getByText('26.5')).toBeInTheDocument();
+    expect(screen.getByText('27.5')).toBeInTheDocument();
+    expect(screen.getByText('62.0%')).toBeInTheDocument(); // blendedProb
+  });
+
+  it('renders error rows with status message', () => {
+    const players = [
+      makePlayer({
+        playerName: 'Unknown',
+        result: null,
+        status: 'player_not_found',
+        statusMessage: 'Player not found',
+      }),
+    ];
+    render(<BatchResultsTable results={makeResults(players)} onClear={onClear} />);
+
+    expect(screen.getByText('Unknown')).toBeInTheDocument();
+    expect(screen.getByText('Player not found')).toBeInTheDocument();
+  });
+
+  it('sorts by column when header clicked', async () => {
+    const user = userEvent.setup();
+    const players = [
+      makePlayer({ playerName: 'Zach', result: { ...makePlayer().result!, ev: 0.05 } }),
+      makePlayer({ playerName: 'Aaron', result: { ...makePlayer().result!, ev: 0.15 } }),
+    ];
+    render(<BatchResultsTable results={makeResults(players)} onClear={onClear} />);
+
+    // Click Player header to sort alphabetically
+    await user.click(screen.getByText(/^Player/));
+
+    const rows = screen.getAllByRole('row');
+    // rows[0] is header, rows[1] and rows[2] are data
+    expect(rows[1]).toHaveTextContent('Aaron');
+    expect(rows[2]).toHaveTextContent('Zach');
+  });
+
+  it('toggles sort direction on repeated header click', async () => {
+    const user = userEvent.setup();
+    const players = [
+      makePlayer({ playerName: 'Aaron' }),
+      makePlayer({ playerName: 'Zach' }),
+    ];
+    render(<BatchResultsTable results={makeResults(players)} onClear={onClear} />);
+
+    // Click Player twice for descending
+    await user.click(screen.getByText(/^Player/));
+    await user.click(screen.getByText(/^Player/));
+
+    const rows = screen.getAllByRole('row');
+    expect(rows[1]).toHaveTextContent('Zach');
+    expect(rows[2]).toHaveTextContent('Aaron');
+  });
+
+  it('calls onClear when Clear button clicked', async () => {
+    const user = userEvent.setup();
+    const players = [makePlayer()];
+    render(<BatchResultsTable results={makeResults(players)} onClear={onClear} />);
+
+    await user.click(screen.getByText('Clear'));
+    expect(onClear).toHaveBeenCalledTimes(1);
+  });
+
+  it('copies results to clipboard', async () => {
+    const user = userEvent.setup();
+    const players = [makePlayer({ playerName: 'Test' })];
+    render(<BatchResultsTable results={makeResults(players)} onClear={onClear} />);
+
+    // jsdom navigator.clipboard is getter-only — override via defineProperty
+    const writeText = jest.fn().mockResolvedValue(undefined);
+    Object.defineProperty(window.navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true,
+    });
+
+    await user.click(screen.getByText('Copy Results'));
+    expect(writeText).toHaveBeenCalledTimes(1);
+
+    const clipboardText = writeText.mock.calls[0][0];
+    expect(clipboardText).toContain('Player\tStat\tLine');
+    expect(clipboardText).toContain('Test');
+  });
+
+  it('shows EV with correct sign and formatting', () => {
+    const players = [
+      makePlayer({ playerName: 'Positive', result: { ...makePlayer().result!, ev: 0.12 } }),
+      makePlayer({ playerName: 'Negative', result: { ...makePlayer().result!, ev: -0.05, tier: 'REJECT', kellyStake: 0 } }),
+    ];
+    render(<BatchResultsTable results={makeResults(players)} onClear={onClear} />);
+
+    expect(screen.getByText('+12.0%')).toBeInTheDocument();
+    expect(screen.getByText('-5.0%')).toBeInTheDocument();
+  });
+
+  it('shows $0 for zero kelly stake', () => {
+    const players = [
+      makePlayer({ result: { ...makePlayer().result!, kellyStake: 0, tier: 'REJECT', ev: -0.05 } }),
+    ];
+    render(<BatchResultsTable results={makeResults(players)} onClear={onClear} />);
+
+    expect(screen.getByText('$0')).toBeInTheDocument();
+  });
+});

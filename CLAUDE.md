@@ -7,11 +7,12 @@ Read AGENTS.md first for full project context, math pipeline, and calibration da
 - **Language:** TypeScript (strict mode)
 - **UI:** React 19 + Tailwind CSS v4
 - **Testing:** Jest 29 + ts-jest + React Testing Library
+- **APIs:** The Odds API + balldontlie.io (via server-side API routes)
 - **Runtime:** Node.js 18+
 
 ## Commands
 ```bash
-npm test             # Run all tests (75 total: 50 math + 25 UI)
+npm test             # Run all tests (155 total)
 npm run build        # Production build — catches type errors
 npm run dev          # Dev server at http://localhost:3000
 npm audit            # Should show 0 vulnerabilities
@@ -30,22 +31,38 @@ npm audit            # Should show 0 vulnerabilities
 ```
 src/
 ├── app/
-│   ├── layout.tsx          ← Root HTML layout
-│   ├── page.tsx            ← Renders <Calculator />
-│   └── globals.css         ← Tailwind import + body styles
+│   ├── layout.tsx              ← Root HTML layout
+│   ├── page.tsx                ← Renders <Calculator />
+│   ├── globals.css             ← CSS variables + Tailwind import
+│   └── api/
+│       ├── odds/route.ts       ← The Odds API proxy
+│       └── player-stats/route.ts ← balldontlie proxy
 ├── components/
-│   ├── Calculator.tsx      ← Orchestrator: owns state, runs math pipeline
-│   ├── PlayerForm.tsx      ← Input form (controlled, with validation)
-│   ├── ResultsDisplay.tsx  ← Shows probabilities, EV, Kelly, tier
-│   ├── TierBadge.tsx       ← Colored pill for HIGH/MEDIUM/LOW/REJECT
-│   └── types.ts            ← Shared TypeScript interfaces
+│   ├── Calculator.tsx          ← Orchestrator: batch/single mode, state, math
+│   ├── PlayerForm.tsx          ← Manual input form (controlled, validated)
+│   ├── ResultsDisplay.tsx      ← Single player results
+│   ├── GameSelector.tsx        ← Game selection (auto-fetches games)
+│   ├── BatchResultsTable.tsx   ← Sortable batch results table
+│   ├── PasteInput.tsx          ← DFS text paste with live preview
+│   ├── TierBadge.tsx           ← Colored pill for HIGH/MEDIUM/LOW/REJECT
+│   └── types.ts                ← Shared TypeScript interfaces
 └── lib/
-    └── math.ts             ← Pure math engine (DO NOT modify without tests)
+    ├── math.ts                 ← Pure math engine (DO NOT modify without tests)
+    ├── oddsApi.ts              ← Odds API types + transforms
+    ├── playerStats.ts          ← Player stats fetch + cache
+    ├── batchProcessor.ts       ← Batch calculation engine
+    └── parsers.ts              ← DFS text paste parser
 
 __tests__/
-├── math.test.ts            ← 50 tests for all math functions
-├── PlayerForm.test.tsx     ← 10 tests for form rendering + validation
-└── Calculator.test.tsx     ← 15 tests for pipeline + integration
+├── math.test.ts                ← 50 math tests
+├── PlayerForm.test.tsx         ← 10 form tests
+├── Calculator.test.tsx         ← 16 pipeline + integration tests
+├── oddsApi.test.ts             ← 10 API transform tests
+├── playerStats.test.ts         ← 14 position mapping tests
+├── batchProcessor.test.ts      ← 15 batch processing tests
+├── GameSelector.test.tsx       ← 9 game selector UI tests
+├── BatchResultsTable.test.tsx  ← 9 results table tests
+└── parsers.test.ts             ← 22 DFS text parser tests
 ```
 
 ## Math Pipeline (executed in Calculator.tsx)
@@ -57,6 +74,18 @@ applyModifiers(blended, modifiers)       → adjusted for pace/injury
 kellyStake(adjusted, odds, bankroll)     → stake + EV
 assignTier({ prob, ev, flags })          → HIGH/MEDIUM/LOW/REJECT
 ```
+
+## Environment Variables (.env.local)
+```
+ODDS_API_KEY=your_key_here
+BALLDONTLIE_API_KEY=your_key_here
+```
+
+## Deployment (Vercel)
+1. Push to GitHub
+2. Connect repo in Vercel dashboard
+3. Add environment variables (ODDS_API_KEY, BALLDONTLIE_API_KEY)
+4. Deploy — Vercel auto-detects Next.js
 
 ## MCP Servers (recommended)
 - **Context7** — Live framework docs (Next.js, React, Tailwind)

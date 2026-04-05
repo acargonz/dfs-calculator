@@ -5,6 +5,12 @@ import '@testing-library/jest-dom';
 import Calculator, { calculate } from '../src/components/Calculator';
 import type { PlayerFormData } from '../src/components/types';
 
+// Mock oddsApi to prevent GameSelector from making real fetch calls
+jest.mock('../src/lib/oddsApi', () => ({
+  fetchGames: jest.fn().mockResolvedValue([]),
+  fetchProps: jest.fn().mockResolvedValue([]),
+}));
+
 // Test the pure calculate function directly (no DOM needed)
 describe('calculate()', () => {
   const sampleInput: PlayerFormData = {
@@ -110,9 +116,18 @@ describe('calculate()', () => {
 
 // Integration test: render the full Calculator and interact with it
 describe('Calculator component', () => {
-  it('shows results after submitting valid data', async () => {
+  it('defaults to batch mode with tab toggle', () => {
+    render(<Calculator />);
+    expect(screen.getByText('Batch')).toBeInTheDocument();
+    expect(screen.getByText('Single Player')).toBeInTheDocument();
+  });
+
+  it('shows results after submitting valid data in single mode', async () => {
     const user = userEvent.setup();
     render(<Calculator />);
+
+    // Switch to Single Player mode
+    await user.click(screen.getByText('Single Player'));
 
     // Fill the form
     await user.type(screen.getByLabelText('Player Name'), 'LeBron James');
@@ -131,8 +146,10 @@ describe('Calculator component', () => {
     expect(screen.getByText(/Kelly Stake/)).toBeInTheDocument();
   });
 
-  it('does not show results before submission', () => {
+  it('does not show results before submission in single mode', async () => {
+    const user = userEvent.setup();
     render(<Calculator />);
+    await user.click(screen.getByText('Single Player'));
     expect(screen.queryByTestId('tier-badge')).not.toBeInTheDocument();
   });
 });
