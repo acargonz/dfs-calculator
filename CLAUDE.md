@@ -7,12 +7,12 @@ Read AGENTS.md first for full project context, math pipeline, and calibration da
 - **Language:** TypeScript (strict mode)
 - **UI:** React 19 + Tailwind CSS v4
 - **Testing:** Jest 29 + ts-jest + React Testing Library
-- **APIs:** The Odds API + balldontlie.io (via server-side API routes)
+- **APIs:** The Odds API + PBP Stats + balldontlie.io (via server-side API routes)
 - **Runtime:** Node.js 18+
 
 ## Commands
 ```bash
-npm test             # Run all tests (155 total)
+npm test             # Run all tests (170 total)
 npm run build        # Production build — catches type errors
 npm run dev          # Dev server at http://localhost:3000
 npm audit            # Should show 0 vulnerabilities
@@ -36,7 +36,7 @@ src/
 │   ├── globals.css             ← CSS variables + Tailwind import
 │   └── api/
 │       ├── odds/route.ts       ← The Odds API proxy
-│       └── player-stats/route.ts ← balldontlie proxy
+│       └── player-stats/route.ts ← PBP Stats (stats) + balldontlie (position)
 ├── components/
 │   ├── Calculator.tsx          ← Orchestrator: batch/single mode, state, math
 │   ├── PlayerForm.tsx          ← Manual input form (controlled, validated)
@@ -57,11 +57,11 @@ __tests__/
 ├── math.test.ts                ← 50 math tests
 ├── PlayerForm.test.tsx         ← 10 form tests
 ├── Calculator.test.tsx         ← 16 pipeline + integration tests
-├── oddsApi.test.ts             ← 10 API transform tests
+├── oddsApi.test.ts             ← 23 API transform + cross-reference tests
 ├── playerStats.test.ts         ← 14 position mapping tests
 ├── batchProcessor.test.ts      ← 15 batch processing tests
 ├── GameSelector.test.tsx       ← 9 game selector UI tests
-├── BatchResultsTable.test.tsx  ← 9 results table tests
+├── BatchResultsTable.test.tsx  ← 11 results table tests
 └── parsers.test.ts             ← 22 DFS text parser tests
 ```
 

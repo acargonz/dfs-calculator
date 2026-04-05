@@ -159,6 +159,59 @@ describe('BatchResultsTable', () => {
     expect(clipboardText).toContain('Test');
   });
 
+  it('includes error rows in clipboard copy', async () => {
+    const user = userEvent.setup();
+    const players = [
+      makePlayer({
+        playerName: 'Broken Player',
+        result: null,
+        status: 'player_not_found',
+        statusMessage: 'Player not found',
+      }),
+    ];
+    render(<BatchResultsTable results={makeResults(players)} onClear={onClear} />);
+
+    const writeText = jest.fn().mockResolvedValue(undefined);
+    Object.defineProperty(window.navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true,
+    });
+
+    await user.click(screen.getByText('Copy Results'));
+    expect(writeText).toHaveBeenCalledTimes(1);
+
+    const clipboardText = writeText.mock.calls[0][0];
+    expect(clipboardText).toContain('Player\tStat\tLine');
+    expect(clipboardText).toContain('Broken Player');
+    expect(clipboardText).toContain('ERROR: Player not found');
+  });
+
+  it('copies both success and error rows', async () => {
+    const user = userEvent.setup();
+    const players = [
+      makePlayer({ playerName: 'Good Player' }),
+      makePlayer({
+        playerName: 'Bad Player',
+        result: null,
+        status: 'api_error',
+        statusMessage: 'API timeout',
+      }),
+    ];
+    render(<BatchResultsTable results={makeResults(players)} onClear={onClear} />);
+
+    const writeText = jest.fn().mockResolvedValue(undefined);
+    Object.defineProperty(window.navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true,
+    });
+
+    await user.click(screen.getByText('Copy Results'));
+    const clipboardText = writeText.mock.calls[0][0];
+    expect(clipboardText).toContain('Good Player');
+    expect(clipboardText).toContain('Bad Player');
+    expect(clipboardText).toContain('ERROR: API timeout');
+  });
+
   it('shows EV with correct sign and formatting', () => {
     const players = [
       makePlayer({ playerName: 'Positive', result: { ...makePlayer().result!, ev: 0.12 } }),

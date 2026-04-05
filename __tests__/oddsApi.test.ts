@@ -1,8 +1,11 @@
 import {
   transformGames,
   transformProps,
+  normalizeName,
+  crossReferenceOdds,
   type OddsApiEvent,
   type OddsApiEventOdds,
+  type PlayerProp,
 } from '../src/lib/oddsApi';
 
 describe('transformGames', () => {
@@ -209,5 +212,109 @@ describe('transformProps', () => {
 
     const props = transformProps(event);
     expect(props).toHaveLength(2);
+  });
+});
+
+describe('normalizeName', () => {
+  it('lowercases and trims', () => {
+    expect(normalizeName('  LeBron James  ')).toBe('lebron james');
+  });
+
+  it('strips Jr./Sr. suffixes', () => {
+    expect(normalizeName('Jaren Jackson Jr.')).toBe('jaren jackson');
+    expect(normalizeName('Gary Trent Jr')).toBe('gary trent');
+  });
+
+  it('strips roman numeral suffixes', () => {
+    expect(normalizeName('Robert Williams III')).toBe('robert williams');
+    expect(normalizeName('Walker Kessler II')).toBe('walker kessler');
+  });
+
+  it('strips diacritics', () => {
+    expect(normalizeName('Nikola Jokić')).toBe('nikola jokic');
+    expect(normalizeName('Luka Dončić')).toBe('luka doncic');
+  });
+
+  it('removes non-alpha characters', () => {
+    expect(normalizeName("Shai Gilgeous-Alexander")).toBe('shai gilgeousalexander');
+  });
+});
+
+describe('crossReferenceOdds', () => {
+  const realProps: PlayerProp[] = [
+    { playerName: 'LeBron James', statType: 'points', line: 26.5, overOdds: -130, underOdds: 110, bookmaker: 'fanduel' },
+    { playerName: 'LeBron James', statType: 'rebounds', line: 7.5, overOdds: -115, underOdds: -105, bookmaker: 'fanduel' },
+    { playerName: 'Stephen Curry', statType: 'points', line: 28.5, overOdds: -120, underOdds: 100, bookmaker: 'draftkings' },
+    { playerName: 'Stephen Curry', statType: 'threes', line: 4.5, overOdds: -110, underOdds: -110, bookmaker: 'draftkings' },
+    { playerName: 'Nikola Jokić', statType: 'assists', line: 9.5, overOdds: +105, underOdds: -125, bookmaker: 'fanduel' },
+  ];
+
+  it('matches exact name + stat type', () => {
+    const parsed = [{ playerName: 'LeBron James', statType: 'points', line: 25.5 }];
+    const results = crossReferenceOdds(parsed, realProps);
+    expect(results).toHaveLength(1);
+    expect(results[0].matched).toBe(true);
+    expect(results[0].prop.overOdds).toBe(-130);
+    expect(results[0].prop.underOdds).toBe(110);
+    // Uses the DFS line, not the sportsbook line
+    expect(results[0].prop.line).toBe(25.5);
+  });
+
+  it('matches different stat types for same player independently', () => {
+    const parsed = [
+      { playerName: 'LeBron James', statType: 'points', line: 26.5 },
+      { playerName: 'LeBron James', statType: 'rebounds', line: 8.5 },
+    ];
+    const results = crossReferenceOdds(parsed, realProps);
+    expect(results[0].matched).toBe(true);
+    expect(results[0].prop.overOdds).toBe(-130);
+    expect(results[1].matched).toBe(true);
+    expect(results[1].prop.overOdds).toBe(-115);
+  });
+
+  it('matches by last name when unambiguous', () => {
+    const parsed = [{ playerName: 'Curry', statType: 'points', line: 27.5 }];
+    // Only one "Curry" with points — should fuzzy match
+    const results = crossReferenceOdds(parsed, realProps);
+    expect(results[0].matched).toBe(true);
+    expect(results[0].prop.overOdds).toBe(-120);
+  });
+
+  it('falls back to -110/-110 when no match found', () => {
+    const parsed = [{ playerName: 'Unknown Player', statType: 'points', line: 20.5 }];
+    const results = crossReferenceOdds(parsed, realProps);
+    expect(results[0].matched).toBe(false);
+    expect(results[0].prop.overOdds).toBe(-110);
+    expect(results[0].prop.underOdds).toBe(-110);
+    expect(results[0].prop.bookmaker).toBe('no-match');
+  });
+
+  it('falls back when stat type does not match', () => {
+    const parsed = [{ playerName: 'LeBron James', statType: 'steals', line: 1.5 }];
+    const results = crossReferenceOdds(parsed, realProps);
+    expect(results[0].matched).toBe(false);
+  });
+
+  it('handles diacritics in parsed name vs API name', () => {
+    const parsed = [{ playerName: 'Nikola Jokic', statType: 'assists', line: 9.5 }];
+    const results = crossReferenceOdds(parsed, realProps);
+    expect(results[0].matched).toBe(true);
+    expect(results[0].prop.overOdds).toBe(105);
+  });
+
+  it('returns empty array for empty input', () => {
+    expect(crossReferenceOdds([], realProps)).toEqual([]);
+  });
+
+  it('handles multiple parsed players with mixed match results', () => {
+    const parsed = [
+      { playerName: 'LeBron James', statType: 'points', line: 25.5 },
+      { playerName: 'Nobody Real', statType: 'points', line: 15.5 },
+      { playerName: 'Stephen Curry', statType: 'threes', line: 4.5 },
+    ];
+    const results = crossReferenceOdds(parsed, realProps);
+    expect(results[0].matched).toBe(true);
+    expect(results[1].matched).toBe(false);
+    expect(results[2].matched).toBe(true);
   });
 });

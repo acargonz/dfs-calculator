@@ -72,12 +72,14 @@ export default function BatchResultsTable({ results, onClear }: BatchResultsTabl
 
   function copyResults() {
     const header = 'Player\tStat\tLine\tMean\tProb\tEV\tStake\tTier';
-    const rows = results.players
-      .filter((p) => p.status === 'success' && p.result)
-      .map((p) => {
-        const r = p.result!;
+    const rows = results.players.map((p) => {
+      if (p.status === 'success' && p.result) {
+        const r = p.result;
         return `${p.playerName}\t${p.statType}\t${p.line}\t${p.mean.toFixed(1)}\t${pct(r.blendedProb)}\t${(r.ev * 100).toFixed(1)}%\t$${r.kellyStake.toFixed(2)}\t${r.tier}`;
-      });
+      }
+      // Include error rows with status info
+      return `${p.playerName}\t${p.statType}\t${p.line}\t-\t-\t-\t-\tERROR: ${p.statusMessage || p.status}`;
+    });
     navigator.clipboard.writeText([header, ...rows].join('\n'));
   }
 
