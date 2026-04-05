@@ -10,36 +10,48 @@ with mathematically grounded probability, EV, and stake sizing.
 
 ## Tech Stack
 - **Runtime:** Node.js 18+
-- **Framework:** Next.js 14 (App Router)
+- **Framework:** Next.js 15 (App Router)
 - **Language:** TypeScript (strict mode)
-- **Testing:** Jest + ts-jest
-- **Styling:** Tailwind CSS (planned)
+- **UI:** React 19 + Tailwind CSS v4
+- **Testing:** Jest + ts-jest + React Testing Library
 
 ## Project Structure
 ```
 dfs-calculator/
 ├── AGENTS.md            ← YOU ARE HERE. Read this first, always.
+├── CLAUDE.md            ← Quick reference for Claude Code sessions
 ├── README.md            ← Human-readable setup and usage
 ├── package.json
 ├── tsconfig.json
 ├── jest.config.js
 ├── next.config.js
+├── postcss.config.mjs   ← Tailwind CSS v4 PostCSS plugin
 ├── src/
 │   ├── lib/
 │   │   └── math.ts      ← Pure math engine. ALL betting math lives here.
+│   ├── components/
+│   │   ├── Calculator.tsx    ← Orchestrator: state + math pipeline
+│   │   ├── PlayerForm.tsx    ← Input form with validation
+│   │   ├── ResultsDisplay.tsx ← Probability, EV, Kelly, tier output
+│   │   ├── TierBadge.tsx     ← Colored badge for confidence tier
+│   │   └── types.ts          ← Shared TypeScript interfaces
 │   └── app/
-│       ├── layout.tsx
-│       └── page.tsx      ← UI (calculator form + results display)
+│       ├── layout.tsx    ← Root HTML layout
+│       ├── page.tsx      ← Renders <Calculator />
+│       └── globals.css   ← Tailwind import + body styles
 └── __tests__/
-    └── math.test.ts      ← 50 tests. Must ALL pass before any deploy.
+    ├── math.test.ts          ← 50 math tests
+    ├── PlayerForm.test.tsx   ← 10 form tests
+    └── Calculator.test.tsx   ← 15 pipeline + integration tests
 ```
 
 ## Important Commands
 ```bash
 npm install          # Install dependencies
-npm test             # Run all 50 tests — MUST pass before any change ships
+npm test             # Run all 75 tests — MUST pass before any change ships
 npm run dev          # Start local dev server at http://localhost:3000
 npm run build        # Production build (catches type errors)
+npm audit            # Check for security vulnerabilities (should be 0)
 ```
 
 ## Workflow Rules (for AI agents)
