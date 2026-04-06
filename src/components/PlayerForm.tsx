@@ -11,6 +11,11 @@ const STAT_TYPES: { value: StatType; label: string }[] = [
   { value: 'steals', label: 'Steals' },
   { value: 'blocks', label: 'Blocks' },
   { value: 'threes', label: 'Threes' },
+  { value: 'fantasy', label: 'Fantasy Points (DK)' },
+  { value: 'pra', label: 'Pts+Rebs+Asts' },
+  { value: 'pts+rebs', label: 'Pts+Rebs' },
+  { value: 'pts+asts', label: 'Pts+Asts' },
+  { value: 'rebs+asts', label: 'Rebs+Asts' },
 ];
 
 interface PlayerFormProps {

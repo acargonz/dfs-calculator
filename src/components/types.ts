@@ -6,7 +6,12 @@ export type StatType =
   | 'assists'
   | 'steals'
   | 'blocks'
-  | 'threes';
+  | 'threes'
+  | 'fantasy'
+  | 'pra'
+  | 'pts+rebs'
+  | 'pts+asts'
+  | 'rebs+asts';
 
 export interface PlayerFormData {
   playerName: string;

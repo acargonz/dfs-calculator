@@ -9,7 +9,7 @@ export interface NBAGame {
 
 export interface PlayerProp {
   playerName: string;
-  statType: 'points' | 'rebounds' | 'assists' | 'steals' | 'blocks' | 'threes';
+  statType: 'points' | 'rebounds' | 'assists' | 'steals' | 'blocks' | 'threes' | 'fantasy' | 'pra' | 'pts+rebs' | 'pts+asts' | 'rebs+asts';
   line: number;
   overOdds: number;  // American odds
   underOdds: number; // American odds
@@ -24,6 +24,10 @@ const MARKET_MAP: Record<string, PlayerProp['statType']> = {
   player_threes: 'threes',
   player_steals: 'steals',
   player_blocks: 'blocks',
+  player_points_rebounds_assists: 'pra',
+  player_points_rebounds: 'pts+rebs',
+  player_points_assists: 'pts+asts',
+  player_rebounds_assists: 'rebs+asts',
 };
 
 export const SUPPORTED_MARKETS = Object.keys(MARKET_MAP).join(',');

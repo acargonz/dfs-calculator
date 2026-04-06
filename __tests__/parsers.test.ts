@@ -198,4 +198,48 @@ Rebounds
     expect(result[0].direction).toBe('over');
     expect(result[1].direction).toBe('under');
   });
+
+  // Combo + Fantasy stat types
+  it('parses PRA (Pts+Rebs+Asts)', () => {
+    const text = `LeBron James
+More
+Pts+Rebs+Asts
+38.5`;
+    const result = parseDFSText(text);
+    expect(result).toHaveLength(1);
+    expect(result[0].statType).toBe('pra');
+    expect(result[0].line).toBe(38.5);
+  });
+
+  it('parses Fantasy Points', () => {
+    const text = `Stephen Curry
+More
+Fantasy Score
+47.5`;
+    const result = parseDFSText(text);
+    expect(result).toHaveLength(1);
+    expect(result[0].statType).toBe('fantasy');
+    expect(result[0].line).toBe(47.5);
+  });
+
+  it('parses Pts+Rebs combo', () => {
+    const text = `Giannis Antetokounmpo
+More
+Pts+Rebs
+33.5`;
+    const result = parseDFSText(text);
+    expect(result).toHaveLength(1);
+    expect(result[0].statType).toBe('pts+rebs');
+  });
+
+  it('parses Rebs+Asts combo', () => {
+    const text = `Nikola Jokic
+Less
+Rebs+Asts
+22.5`;
+    const result = parseDFSText(text);
+    expect(result).toHaveLength(1);
+    expect(result[0].statType).toBe('rebs+asts');
+    expect(result[0].direction).toBe('under');
+  });
 });

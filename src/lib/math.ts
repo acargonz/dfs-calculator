@@ -211,22 +211,27 @@ function defaultStd(mean: number, position: string, stat: string): number {
     PG: {
       points: 0.33, rebounds: 0.38, assists: 0.38,
       steals: 0.65, blocks: 0.70, threes: 0.55,
+      fantasy: 0.20, pra: 0.22, 'pts+rebs': 0.25, 'pts+asts': 0.25, 'rebs+asts': 0.30,
     },
     SG: {
       points: 0.30, rebounds: 0.36, assists: 0.40,
       steals: 0.65, blocks: 0.70, threes: 0.55,
+      fantasy: 0.20, pra: 0.22, 'pts+rebs': 0.24, 'pts+asts': 0.25, 'rebs+asts': 0.30,
     },
     SF: {
       points: 0.33, rebounds: 0.33, assists: 0.42,
       steals: 0.65, blocks: 0.65, threes: 0.58,
+      fantasy: 0.20, pra: 0.22, 'pts+rebs': 0.24, 'pts+asts': 0.26, 'rebs+asts': 0.30,
     },
     PF: {
       points: 0.33, rebounds: 0.30, assists: 0.45,
       steals: 0.65, blocks: 0.60, threes: 0.60,
+      fantasy: 0.20, pra: 0.22, 'pts+rebs': 0.23, 'pts+asts': 0.27, 'rebs+asts': 0.28,
     },
     C: {
       points: 0.35, rebounds: 0.28, assists: 0.48,
       steals: 0.70, blocks: 0.55, threes: 0.65,
+      fantasy: 0.20, pra: 0.22, 'pts+rebs': 0.23, 'pts+asts': 0.28, 'rebs+asts': 0.27,
     },
   };
 

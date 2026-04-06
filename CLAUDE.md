@@ -12,7 +12,7 @@ Read AGENTS.md first for full project context, math pipeline, and calibration da
 
 ## Commands
 ```bash
-npm test             # Run all tests (170 total)
+npm test             # Run all tests (192 total)
 npm run build        # Production build — catches type errors
 npm run dev          # Dev server at http://localhost:3000
 npm audit            # Should show 0 vulnerabilities
@@ -54,15 +54,15 @@ src/
     └── parsers.ts              ← DFS text paste parser
 
 __tests__/
-├── math.test.ts                ← 50 math tests
+├── math.test.ts                ← 55 math tests (incl. combo/fantasy CV)
 ├── PlayerForm.test.tsx         ← 10 form tests
-├── Calculator.test.tsx         ← 16 pipeline + integration tests
-├── oddsApi.test.ts             ← 23 API transform + cross-reference tests
+├── Calculator.test.tsx         ← 19 pipeline + integration tests
+├── oddsApi.test.ts             ← 26 API transform + cross-reference tests
 ├── playerStats.test.ts         ← 14 position mapping tests
-├── batchProcessor.test.ts      ← 15 batch processing tests
+├── batchProcessor.test.ts      ← 22 batch processing tests (incl. combo/fantasy)
 ├── GameSelector.test.tsx       ← 9 game selector UI tests
 ├── BatchResultsTable.test.tsx  ← 11 results table tests
-└── parsers.test.ts             ← 22 DFS text parser tests
+└── parsers.test.ts             ← 26 DFS text parser tests (incl. combo/fantasy)
 ```
 
 ## Math Pipeline (executed in Calculator.tsx)

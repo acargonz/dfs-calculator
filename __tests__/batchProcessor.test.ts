@@ -12,7 +12,7 @@ const mockStats: PlayerSeasonAvg = {
   playerName: 'Test Player',
   position: 'SF',
   team: 'Test Team',
-  stats: { points: 25.0, rebounds: 8.0, assists: 6.5, steals: 1.2, blocks: 0.8, threes: 2.5 },
+  stats: { points: 25.0, rebounds: 8.0, assists: 6.5, steals: 1.2, blocks: 0.8, threes: 2.5, turnovers: 3.5 },
 };
 
 describe('getStatMean', () => {
@@ -40,8 +40,30 @@ describe('getStatMean', () => {
     expect(getStatMean(mockStats.stats, 'threes')).toBe(2.5);
   });
 
+  it('returns PRA (points + rebounds + assists)', () => {
+    expect(getStatMean(mockStats.stats, 'pra')).toBe(39.5); // 25 + 8 + 6.5
+  });
+
+  it('returns pts+rebs', () => {
+    expect(getStatMean(mockStats.stats, 'pts+rebs')).toBe(33.0); // 25 + 8
+  });
+
+  it('returns pts+asts', () => {
+    expect(getStatMean(mockStats.stats, 'pts+asts')).toBe(31.5); // 25 + 6.5
+  });
+
+  it('returns rebs+asts', () => {
+    expect(getStatMean(mockStats.stats, 'rebs+asts')).toBe(14.5); // 8 + 6.5
+  });
+
+  it('returns fantasy points (DK scoring)', () => {
+    // 25*1 + 8*1.25 + 6.5*1.5 + 1.2*2 + 0.8*2 + 2.5*0.5 - 3.5*0.5
+    // = 25 + 10 + 9.75 + 2.4 + 1.6 + 1.25 - 1.75 = 48.25
+    expect(getStatMean(mockStats.stats, 'fantasy')).toBeCloseTo(48.25, 2);
+  });
+
   it('returns 0 for unknown stat type', () => {
-    expect(getStatMean(mockStats.stats, 'turnovers')).toBe(0);
+    expect(getStatMean(mockStats.stats, 'unknown')).toBe(0);
   });
 });
 
@@ -183,5 +205,47 @@ describe('processBatch', () => {
     expect(onProgress).toHaveBeenCalledTimes(2);
     expect(onProgress).toHaveBeenCalledWith(1, 2, 'A');
     expect(onProgress).toHaveBeenCalledWith(2, 2, 'B');
+  });
+
+  it('processes PRA prop end-to-end', async () => {
+    mockFetchStats.mockResolvedValue(mockStats);
+
+    const input: BatchInput = {
+      props: [
+        { playerName: 'Test Player', statType: 'pra', line: 38.5, overOdds: -110, underOdds: -110, bookmaker: 'fanduel' },
+      ],
+      bankroll: 100,
+      kellyMode: 'standard',
+      paceModifier: 0,
+      injuryModifier: 0,
+    };
+
+    const result = await processBatch(input, mockFetchStats);
+    expect(result.players).toHaveLength(1);
+    expect(result.players[0].status).toBe('success');
+    expect(result.players[0].mean).toBe(39.5); // 25 + 8 + 6.5
+    expect(result.players[0].result).not.toBeNull();
+    expect(result.players[0].result!.source).toBe('NegBinomial');
+  });
+
+  it('processes fantasy prop end-to-end', async () => {
+    mockFetchStats.mockResolvedValue(mockStats);
+
+    const input: BatchInput = {
+      props: [
+        { playerName: 'Test Player', statType: 'fantasy', line: 47.5, overOdds: -115, underOdds: -105, bookmaker: 'draftkings' },
+      ],
+      bankroll: 100,
+      kellyMode: 'standard',
+      paceModifier: 0,
+      injuryModifier: 0,
+    };
+
+    const result = await processBatch(input, mockFetchStats);
+    expect(result.players).toHaveLength(1);
+    expect(result.players[0].status).toBe('success');
+    expect(result.players[0].mean).toBeCloseTo(48.25, 1);
+    expect(result.players[0].result).not.toBeNull();
+    expect(['HIGH', 'MEDIUM', 'LOW', 'REJECT']).toContain(result.players[0].result!.tier);
   });
 });

@@ -143,6 +143,36 @@ describe('modelCountingStat', () => {
     expect(r.overProb).toBeGreaterThan(0);
     expect(r.overProb).toBeLessThan(1);
   });
+
+  // Combo stat tests
+  test('PRA: mean above line → reasonable overProb', () => {
+    const r = modelCountingStat(39.5, 38.5, 'SF', 'pra');
+    expect(r.overProb).toBeGreaterThan(0.35);
+    expect(r.overProb).toBeLessThan(0.70);
+    expect(r.source).toBe('NegBinomial');
+  });
+  test('fantasy: mean above line → reasonable overProb', () => {
+    const r = modelCountingStat(48.0, 47.5, 'PG', 'fantasy');
+    expect(r.overProb).toBeGreaterThan(0.35);
+    expect(r.overProb).toBeLessThan(0.70);
+  });
+  test('combo CVs are lower than individual stat CVs', () => {
+    // Same proportional gap (mean 15% above line) — PRA's tighter CV (0.22)
+    // produces higher overProb than assists' wider CV (0.42 for SF)
+    const pra = modelCountingStat(40, 34, 'SF', 'pra');   // 15% above line
+    const ast = modelCountingStat(6.5, 5.5, 'SF', 'assists'); // 15% above line
+    expect(pra.overProb).toBeGreaterThan(ast.overProb);
+  });
+  test('pts+rebs works for PF', () => {
+    const r = modelCountingStat(33.0, 32.5, 'PF', 'pts+rebs');
+    expect(r.overProb).toBeGreaterThan(0.30);
+    expect(r.overProb).toBeLessThan(0.70);
+  });
+  test('rebs+asts works for C', () => {
+    const r = modelCountingStat(14.5, 14.5, 'C', 'rebs+asts');
+    expect(r.overProb).toBeGreaterThan(0.30);
+    expect(r.overProb).toBeLessThan(0.70);
+  });
 });
 
 // ============================================================

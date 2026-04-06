@@ -112,6 +112,42 @@ describe('calculate()', () => {
     const same = calculate({ ...sampleInput, paceModifier: 0, injuryModifier: 0 });
     expect(same.blendedProb).toBe(base.blendedProb);
   });
+
+  // Combo + Fantasy stat types
+  it('calculates PRA with NegBinomial source', () => {
+    const result = calculate({
+      ...sampleInput,
+      statType: 'pra',
+      mean: 39.5,
+      line: 38.5,
+    });
+    expect(result.source).toBe('NegBinomial');
+    expect(['HIGH', 'MEDIUM', 'LOW', 'REJECT']).toContain(result.tier);
+    expect(result.blendedProb).toBeGreaterThan(0);
+    expect(result.blendedProb).toBeLessThan(1);
+  });
+
+  it('calculates fantasy points', () => {
+    const result = calculate({
+      ...sampleInput,
+      statType: 'fantasy',
+      mean: 48.0,
+      line: 47.5,
+    });
+    expect(result.source).toBe('NegBinomial');
+    expect(['HIGH', 'MEDIUM', 'LOW', 'REJECT']).toContain(result.tier);
+  });
+
+  it('calculates pts+rebs', () => {
+    const result = calculate({
+      ...sampleInput,
+      statType: 'pts+rebs',
+      mean: 33.0,
+      line: 32.5,
+    });
+    expect(result.source).toBe('NegBinomial');
+    expect(result.blendedProb).toBeGreaterThan(0);
+  });
 });
 
 // Integration test: render the full Calculator and interact with it

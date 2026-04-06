@@ -9,7 +9,7 @@ Convert raw player data + platform odds into actionable over/under picks
 with mathematically grounded probability, EV, and stake sizing.
 
 Supports two workflows:
-1. **Batch mode** (default): Select today's NBA games → auto-fetch props + odds from The Odds API → auto-fetch player stats from balldontlie.io → batch calculate all edges → display sortable results table.
+1. **Batch mode** (default): Select today's NBA games → auto-fetch props + odds from The Odds API → auto-fetch player stats from PBP Stats → batch calculate all edges → display sortable results table.
 2. **Single player mode**: Manual entry of one player at a time with custom odds/stats.
 
 Fallback: Paste text from any DFS app (PrizePicks, Underdog, Pick6) and the parser extracts player names, stat types, and lines automatically.
@@ -20,7 +20,7 @@ Fallback: Paste text from any DFS app (PrizePicks, Underdog, Pick6) and the pars
 - **Language:** TypeScript (strict mode)
 - **UI:** React 19 + Tailwind CSS v4
 - **Testing:** Jest 29 + ts-jest + React Testing Library
-- **APIs:** The Odds API (games + props), balldontlie.io (player stats)
+- **APIs:** The Odds API (games + props), PBP Stats (player season averages), balldontlie.io (position only)
 
 ## Project Structure
 ```
@@ -143,17 +143,31 @@ API keys are stored in `.env.local` (server-side only, never exposed to client).
 These determine how "spread out" the model thinks a player's stat distribution is.
 Lower CV = tighter distribution = more confident predictions when mean ≠ line.
 
-| Position | Points | Rebounds | Assists | Steals | Blocks | Threes |
-|----------|--------|----------|---------|--------|--------|--------|
-| PG       | 0.33   | 0.38     | 0.38    | 0.65   | 0.70   | 0.55   |
-| SG       | 0.30   | 0.36     | 0.40    | 0.65   | 0.70   | 0.55   |
-| SF       | 0.33   | 0.33     | 0.42    | 0.65   | 0.65   | 0.58   |
-| PF       | 0.33   | 0.30     | 0.45    | 0.65   | 0.60   | 0.60   |
-| C        | 0.35   | 0.28     | 0.48    | 0.70   | 0.55   | 0.65   |
+| Position | Points | Rebounds | Assists | Steals | Blocks | Threes | Fantasy | PRA  | P+R  | P+A  | R+A  |
+|----------|--------|----------|---------|--------|--------|--------|---------|------|------|------|------|
+| PG       | 0.33   | 0.38     | 0.38    | 0.65   | 0.70   | 0.55   | 0.20    | 0.22 | 0.25 | 0.25 | 0.30 |
+| SG       | 0.30   | 0.36     | 0.40    | 0.65   | 0.70   | 0.55   | 0.20    | 0.22 | 0.24 | 0.25 | 0.30 |
+| SF       | 0.33   | 0.33     | 0.42    | 0.65   | 0.65   | 0.58   | 0.20    | 0.22 | 0.24 | 0.26 | 0.30 |
+| PF       | 0.33   | 0.30     | 0.45    | 0.65   | 0.60   | 0.60   | 0.20    | 0.22 | 0.23 | 0.27 | 0.28 |
+| C        | 0.35   | 0.28     | 0.48    | 0.70   | 0.55   | 0.65   | 0.20    | 0.22 | 0.23 | 0.28 | 0.27 |
 
 **Points CVs are lower (0.30–0.35)** because scoring is the primary stat being
 modelled and players' shot volumes are more consistent than raw rebound/assist
 opportunity variance.
+
+**Combo/Fantasy CVs are the lowest (0.20–0.30)** because summing multiple stats
+reduces relative variability (diversification effect). Fantasy has the lowest CV
+since it combines 5+ weighted stats.
+
+### DraftKings Fantasy Scoring Formula
+```
+FPTS = (PTS × 1) + (REB × 1.25) + (AST × 1.5) + (STL × 2) + (BLK × 2) + (3PM × 0.5) - (TO × 0.5)
+```
+
+### Supported Stat Types
+- **Individual:** points, rebounds, assists, steals, blocks, threes
+- **Combo:** pra (Pts+Rebs+Asts), pts+rebs, pts+asts, rebs+asts
+- **Fantasy:** fantasy (DraftKings standard scoring)
 
 ## Tier Thresholds
 | Tier   | Min Prob | Min EV  | Flags             |

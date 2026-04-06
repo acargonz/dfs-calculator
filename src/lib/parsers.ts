@@ -67,7 +67,8 @@ export function parseDFSText(text: string): ParsedPlayer[] {
   const DIRECTION_WORDS = new Set(['more', 'less', 'over', 'under', 'higher', 'lower', 'fewer']);
 
   // Stat keywords (before normalization)
-  const STAT_PATTERNS = /\b(points|pts|rebounds|rebs|reb|assists|asts|ast|steals|stl|stls|blocks|blk|blks|threes|3-pointers?|3-?pt|3pm|three[ -]?pointers?( made)?|threes made|pts\+rebs\+asts|pra|pts\+rebs|pts\+asts|rebs\+asts|fantasy points|fantasy score|fpts)\b/i;
+  // Combo/fantasy patterns MUST come before individual stats so "Pts+Rebs+Asts" matches as PRA, not "Pts"
+  const STAT_PATTERNS = /\b(pts\+rebs\+asts|pts \+ rebs \+ asts|pra|pts\+rebs|pts \+ rebs|pts\+asts|pts \+ asts|rebs\+asts|rebs \+ asts|fantasy points|fantasy score|fpts|points|pts|rebounds|rebs|reb|assists|asts|ast|steals|stl|stls|blocks|blk|blks|threes|3-pointers?|3-?pt|3pm|three[ -]?pointers?( made)?|threes made)\b/i;
 
   // Number pattern: matches "24.5", "24", etc.
   const NUMBER_PATTERN = /\b(\d+(?:\.\d+)?)\b/;

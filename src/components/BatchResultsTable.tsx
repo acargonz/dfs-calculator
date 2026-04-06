@@ -32,6 +32,18 @@ function pct(value: number): string {
   return (value * 100).toFixed(1) + '%';
 }
 
+/** Clean display labels for stat types */
+function statLabel(statType: string): string {
+  switch (statType) {
+    case 'fantasy': return 'FPTS';
+    case 'pra': return 'PRA';
+    case 'pts+rebs': return 'P+R';
+    case 'pts+asts': return 'P+A';
+    case 'rebs+asts': return 'R+A';
+    default: return statType.charAt(0).toUpperCase() + statType.slice(1);
+  }
+}
+
 export default function BatchResultsTable({ results, onClear }: BatchResultsTableProps) {
   const [sortKey, setSortKey] = useState<SortKey>('tier');
   const [sortDir, setSortDir] = useState<SortDir>('asc');
@@ -75,10 +87,10 @@ export default function BatchResultsTable({ results, onClear }: BatchResultsTabl
     const rows = results.players.map((p) => {
       if (p.status === 'success' && p.result) {
         const r = p.result;
-        return `${p.playerName}\t${p.statType}\t${p.line}\t${p.mean.toFixed(1)}\t${pct(r.blendedProb)}\t${(r.ev * 100).toFixed(1)}%\t$${r.kellyStake.toFixed(2)}\t${r.tier}`;
+        return `${p.playerName}\t${statLabel(p.statType)}\t${p.line}\t${p.mean.toFixed(1)}\t${pct(r.blendedProb)}\t${(r.ev * 100).toFixed(1)}%\t$${r.kellyStake.toFixed(2)}\t${r.tier}`;
       }
       // Include error rows with status info
-      return `${p.playerName}\t${p.statType}\t${p.line}\t-\t-\t-\t-\tERROR: ${p.statusMessage || p.status}`;
+      return `${p.playerName}\t${statLabel(p.statType)}\t${p.line}\t-\t-\t-\t-\tERROR: ${p.statusMessage || p.status}`;
     });
     navigator.clipboard.writeText([header, ...rows].join('\n'));
   }
@@ -133,7 +145,7 @@ export default function BatchResultsTable({ results, onClear }: BatchResultsTabl
                   style={{ borderTop: '1px solid var(--border-subtle)' }}
                 >
                   <td className="px-3 py-2 font-medium" style={{ color: 'var(--text-primary)' }}>{p.playerName}</td>
-                  <td className="px-3 py-2 capitalize" style={{ color: 'var(--text-secondary)' }}>{p.statType}</td>
+                  <td className="px-3 py-2" style={{ color: 'var(--text-secondary)' }}>{statLabel(p.statType)}</td>
                   <td className="px-3 py-2" style={{ color: 'var(--text-secondary)' }}>{p.line}</td>
                   <td className="px-3 py-2" style={{ color: 'var(--text-secondary)' }}>{p.mean.toFixed(1)}</td>
                   <td className="px-3 py-2 font-medium" style={{ color: 'var(--accent)' }}>{pct(r.blendedProb)}</td>

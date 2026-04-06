@@ -121,6 +121,51 @@ describe('transformProps', () => {
     expect(transformProps({ id: 'x', bookmakers: [] })).toEqual([]);
   });
 
+  it('maps combo market keys to stat types', () => {
+    const event = makeEvent([
+      {
+        key: 'fanduel',
+        markets: [
+          {
+            key: 'player_points_rebounds_assists',
+            outcomes: [
+              { name: 'Over', description: 'Giannis', price: -115, point: 48.5 },
+              { name: 'Under', description: 'Giannis', price: -105, point: 48.5 },
+            ],
+          },
+          {
+            key: 'player_points_rebounds',
+            outcomes: [
+              { name: 'Over', description: 'LeBron', price: -110, point: 28.5 },
+              { name: 'Under', description: 'LeBron', price: -110, point: 28.5 },
+            ],
+          },
+          {
+            key: 'player_points_assists',
+            outcomes: [
+              { name: 'Over', description: 'Trae Young', price: +120, point: 35.5 },
+              { name: 'Under', description: 'Trae Young', price: -140, point: 35.5 },
+            ],
+          },
+          {
+            key: 'player_rebounds_assists',
+            outcomes: [
+              { name: 'Over', description: 'Jokic', price: -105, point: 22.5 },
+              { name: 'Under', description: 'Jokic', price: -115, point: 22.5 },
+            ],
+          },
+        ],
+      },
+    ]);
+
+    const props = transformProps(event);
+    expect(props).toHaveLength(4);
+    expect(props.find(p => p.playerName === 'Giannis')?.statType).toBe('pra');
+    expect(props.find(p => p.playerName === 'LeBron')?.statType).toBe('pts+rebs');
+    expect(props.find(p => p.playerName === 'Trae Young')?.statType).toBe('pts+asts');
+    expect(props.find(p => p.playerName === 'Jokic')?.statType).toBe('rebs+asts');
+  });
+
   it('skips unknown market keys', () => {
     const event = makeEvent([
       {
@@ -316,5 +361,25 @@ describe('crossReferenceOdds', () => {
     expect(results[0].matched).toBe(true);
     expect(results[1].matched).toBe(false);
     expect(results[2].matched).toBe(true);
+  });
+
+  it('matches combo stat type (PRA) against real props', () => {
+    const comboProps: PlayerProp[] = [
+      { playerName: 'Giannis Antetokounmpo', statType: 'pra', line: 48.5, overOdds: -115, underOdds: -105, bookmaker: 'fanduel' },
+    ];
+    const parsed = [{ playerName: 'Giannis Antetokounmpo', statType: 'pra', line: 47.5 }];
+    const results = crossReferenceOdds(parsed, comboProps);
+    expect(results[0].matched).toBe(true);
+    expect(results[0].prop.overOdds).toBe(-115);
+    expect(results[0].prop.line).toBe(47.5); // keeps DFS line
+  });
+
+  it('fantasy stat falls back to -110/-110 (no Odds API market)', () => {
+    // Odds API doesn't have fantasy props, so they always fall back
+    const parsed = [{ playerName: 'LeBron James', statType: 'fantasy', line: 47.5 }];
+    const results = crossReferenceOdds(parsed, realProps);
+    expect(results[0].matched).toBe(false);
+    expect(results[0].prop.overOdds).toBe(-110);
+    expect(results[0].prop.underOdds).toBe(-110);
   });
 });

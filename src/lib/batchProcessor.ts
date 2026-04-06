@@ -51,6 +51,16 @@ export function getStatMean(
     case 'steals': return stats.steals;
     case 'blocks': return stats.blocks;
     case 'threes': return stats.threes;
+    case 'pra': return stats.points + stats.rebounds + stats.assists;
+    case 'pts+rebs': return stats.points + stats.rebounds;
+    case 'pts+asts': return stats.points + stats.assists;
+    case 'rebs+asts': return stats.rebounds + stats.assists;
+    case 'fantasy': {
+      // DraftKings standard NBA scoring
+      const to = stats.turnovers ?? 0;
+      return (stats.points * 1) + (stats.rebounds * 1.25) + (stats.assists * 1.5)
+           + (stats.steals * 2) + (stats.blocks * 2) + (stats.threes * 0.5) - (to * 0.5);
+    }
     default: return 0;
   }
 }

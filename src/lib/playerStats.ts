@@ -11,6 +11,7 @@ export interface PlayerSeasonAvg {
     steals: number;
     blocks: number;
     threes: number;
+    turnovers: number;
   };
 }
 

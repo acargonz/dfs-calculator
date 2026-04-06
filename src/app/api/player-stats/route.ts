@@ -46,6 +46,7 @@ interface PbpPlayer {
   Steals: number;
   Blocks: number;
   FG3M: number;
+  Turnovers: number;
 }
 
 /**
@@ -178,6 +179,7 @@ export async function GET(request: NextRequest) {
       steals: Math.round((player.Steals / gp) * 10) / 10,
       blocks: Math.round((player.Blocks / gp) * 10) / 10,
       threes: Math.round((player.FG3M / gp) * 10) / 10,
+      turnovers: Math.round((player.Turnovers / gp) * 10) / 10,
     };
 
     // Step 4: Look up position (best-effort from balldontlie free tier)
