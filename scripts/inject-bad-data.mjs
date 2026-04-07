@@ -138,6 +138,42 @@ function buildDrawdownScenario() {
   return picks;
 }
 
+/**
+ * Pre-flight schema check. The drawdown rule reads columns added by
+ * migration 001 (bet_odds_over, flat_unit_stake, etc.), so if the migration
+ * isn't applied, the synthetic insert fails with a cryptic PostgREST error
+ * like "Could not find the 'bet_odds_over' column of 'picks' in the schema
+ * cache". Probe the table up front and print a clear, actionable message.
+ *
+ * We only probe bet_odds_over — it's the canary. If it's there, the rest
+ * of migration 001 is there too (the migration is a single transaction).
+ */
+async function assertMigrationApplied() {
+  console.log('→ Pre-flight schema check…');
+  const { error } = await supabase
+    .from('picks')
+    .select('bet_odds_over')
+    .limit(1);
+  if (error && /bet_odds_over/i.test(error.message)) {
+    console.error('  ✗ Migration 001 is NOT applied');
+    console.error('');
+    console.error('  This script needs the columns added by migration 001');
+    console.error('  (bet_odds_over, flat_unit_stake, etc.). Apply it first:');
+    console.error('');
+    console.error('    1. Open Supabase dashboard → SQL Editor');
+    console.error('    2. Paste contents of');
+    console.error('       supabase/migrations/001_pick_history_capture.sql');
+    console.error('    3. Click "Run"');
+    console.error('');
+    console.error('  Or run scripts/check-picks-columns.mjs for a full probe.');
+    throw new Error('migration 001 not applied');
+  }
+  if (error) {
+    throw new Error(`schema check failed: ${error.message}`);
+  }
+  console.log('  ✓ Migration 001 columns present');
+}
+
 async function insertSynthetic(picks) {
   console.log(`→ Inserting ${picks.length} synthetic picks…`);
   const { error } = await supabase.from('picks').insert(picks);
@@ -198,17 +234,21 @@ async function main() {
   console.log('=== Live-fire test: drawdown rules ===\n');
   console.log(`Target: ${targetUrl}\n`);
 
-  const picks = buildDrawdownScenario();
-
-  // Pre-flight: make sure there are no stale synthetic rows from a previous
-  // aborted run. Running cleanup first is safe because we only delete rows
-  // with our unique prefix.
-  console.log('→ Pre-flight cleanup of any stale synthetic rows…');
-  await cleanup();
-  console.log('');
-
   let success = false;
   try {
+    // Pre-flight: verify migration 001 is applied before we touch anything.
+    // Catches the most common "it doesn't work" case with a clear message
+    // instead of a cryptic PostgREST schema-cache error from inside insert().
+    await assertMigrationApplied();
+    console.log('');
+
+    // Pre-flight cleanup: make sure there are no stale synthetic rows from a
+    // previous aborted run. Only deletes rows with our unique prefix.
+    console.log('→ Pre-flight cleanup of any stale synthetic rows…');
+    await cleanup();
+    console.log('');
+
+    const picks = buildDrawdownScenario();
     await insertSynthetic(picks);
     console.log('');
 
@@ -229,10 +269,13 @@ async function main() {
   }
 
   console.log('');
-  process.exit(success ? 0 : 1);
+  // Use exitCode instead of process.exit() so Node can drain pending
+  // supabase-js handles cleanly — avoids the libuv assertion on Windows
+  // (https://github.com/nodejs/node/issues/30271).
+  process.exitCode = success ? 0 : 1;
 }
 
 main().catch((e) => {
   console.error('Fatal:', e);
-  process.exit(1);
+  process.exitCode = 1;
 });
