@@ -29,28 +29,29 @@ describe('calculate()', () => {
 
   it('returns fair probabilities that sum to ~1', () => {
     const result = calculate(sampleInput);
-    expect(result.fairOverProb + result.fairUnderProb).toBeCloseTo(1, 2);
+    expect(result.over.fairProb + result.under.fairProb).toBeCloseTo(1, 2);
   });
 
-  it('returns model probabilities between 0 and 1', () => {
+  it('returns model probabilities between 0 and 1 for both sides', () => {
     const result = calculate(sampleInput);
-    expect(result.modelOverProb).toBeGreaterThan(0);
-    expect(result.modelOverProb).toBeLessThan(1);
-    expect(result.modelUnderProb).toBeGreaterThan(0);
-    expect(result.modelUnderProb).toBeLessThan(1);
+    expect(result.over.modelProb).toBeGreaterThan(0);
+    expect(result.over.modelProb).toBeLessThan(1);
+    expect(result.under.modelProb).toBeGreaterThan(0);
+    expect(result.under.modelProb).toBeLessThan(1);
   });
 
-  it('returns blended probability between fair and model', () => {
+  it('returns blended probability between fair and model on the over side', () => {
     const result = calculate(sampleInput);
-    const min = Math.min(result.fairOverProb, result.modelOverProb);
-    const max = Math.max(result.fairOverProb, result.modelOverProb);
-    expect(result.blendedProb).toBeGreaterThanOrEqual(min - 0.001);
-    expect(result.blendedProb).toBeLessThanOrEqual(max + 0.001);
+    const min = Math.min(result.over.fairProb, result.over.modelProb);
+    const max = Math.max(result.over.fairProb, result.over.modelProb);
+    expect(result.over.blendedProb).toBeGreaterThanOrEqual(min - 0.001);
+    expect(result.over.blendedProb).toBeLessThanOrEqual(max + 0.001);
   });
 
-  it('returns a valid tier', () => {
+  it('returns a valid tier on each side', () => {
     const result = calculate(sampleInput);
-    expect(['HIGH', 'MEDIUM', 'LOW', 'REJECT']).toContain(result.tier);
+    expect(['HIGH', 'MEDIUM', 'LOW', 'REJECT']).toContain(result.over.tier);
+    expect(['HIGH', 'MEDIUM', 'LOW', 'REJECT']).toContain(result.under.tier);
   });
 
   it('returns source as Binomial for points', () => {
@@ -68,49 +69,56 @@ describe('calculate()', () => {
     expect(result.source).toBe('NegBinomial');
   });
 
-  it('kellyStake is 0 when EV is negative', () => {
+  it('over kellyStake is 0 when over EV is negative', () => {
     const result = calculate({
       ...sampleInput,
-      mean: 20,   // well below line of 26.5
+      mean: 20,   // well below line of 26.5 → over has no edge
       line: 26.5,
     });
-    expect(result.kellyStake).toBe(0);
+    expect(result.over.kellyStake).toBe(0);
   });
 
-  it('kellyFraction is 0.25 (standard mode)', () => {
+  it('kellyFraction is 0.25 on both sides (standard mode)', () => {
     const result = calculate(sampleInput);
-    expect(result.kellyFraction).toBe(0.25);
+    expect(result.over.kellyFraction).toBe(0.25);
+    expect(result.under.kellyFraction).toBe(0.25);
   });
 
-  it('demon mode returns kellyFraction of 0.125', () => {
+  it('demon mode returns kellyFraction of 0.125 on both sides', () => {
     const result = calculate({ ...sampleInput, kellyMode: 'demon' });
-    expect(result.kellyFraction).toBe(0.125);
+    expect(result.over.kellyFraction).toBe(0.125);
+    expect(result.under.kellyFraction).toBe(0.125);
   });
 
-  it('larger bankroll increases kelly stake proportionally', () => {
+  it('larger bankroll increases over kelly stake proportionally', () => {
     const small = calculate({ ...sampleInput, bankroll: 100 });
     const large = calculate({ ...sampleInput, bankroll: 1000 });
-    if (small.kellyStake > 0) {
-      expect(large.kellyStake / small.kellyStake).toBeCloseTo(10, 1);
+    if (small.over.kellyStake > 0) {
+      expect(large.over.kellyStake / small.over.kellyStake).toBeCloseTo(10, 1);
     }
   });
 
-  it('positive pace modifier increases blended probability', () => {
+  it('positive pace modifier increases over blended probability', () => {
     const base = calculate(sampleInput);
     const boosted = calculate({ ...sampleInput, paceModifier: 5 });
-    expect(boosted.blendedProb).toBeGreaterThan(base.blendedProb);
+    expect(boosted.over.blendedProb).toBeGreaterThan(base.over.blendedProb);
   });
 
-  it('negative injury modifier decreases blended probability', () => {
+  it('negative injury modifier decreases over blended probability', () => {
     const base = calculate(sampleInput);
     const reduced = calculate({ ...sampleInput, injuryModifier: -5 });
-    expect(reduced.blendedProb).toBeLessThan(base.blendedProb);
+    expect(reduced.over.blendedProb).toBeLessThan(base.over.blendedProb);
   });
 
-  it('modifiers of 0 do not change the result', () => {
+  it('modifiers of 0 do not change the over result', () => {
     const base = calculate(sampleInput);
     const same = calculate({ ...sampleInput, paceModifier: 0, injuryModifier: 0 });
-    expect(same.blendedProb).toBe(base.blendedProb);
+    expect(same.over.blendedProb).toBe(base.over.blendedProb);
+  });
+
+  it('over and under blended probabilities are mirror images at fair odds', () => {
+    const result = calculate({ ...sampleInput, overOdds: -110, underOdds: -110 });
+    expect(result.over.blendedProb + result.under.blendedProb).toBeCloseTo(1, 1);
   });
 
   // Combo + Fantasy stat types
@@ -122,9 +130,9 @@ describe('calculate()', () => {
       line: 38.5,
     });
     expect(result.source).toBe('NegBinomial');
-    expect(['HIGH', 'MEDIUM', 'LOW', 'REJECT']).toContain(result.tier);
-    expect(result.blendedProb).toBeGreaterThan(0);
-    expect(result.blendedProb).toBeLessThan(1);
+    expect(['HIGH', 'MEDIUM', 'LOW', 'REJECT']).toContain(result.over.tier);
+    expect(result.over.blendedProb).toBeGreaterThan(0);
+    expect(result.over.blendedProb).toBeLessThan(1);
   });
 
   it('calculates fantasy points', () => {
@@ -135,7 +143,7 @@ describe('calculate()', () => {
       line: 47.5,
     });
     expect(result.source).toBe('NegBinomial');
-    expect(['HIGH', 'MEDIUM', 'LOW', 'REJECT']).toContain(result.tier);
+    expect(['HIGH', 'MEDIUM', 'LOW', 'REJECT']).toContain(result.over.tier);
   });
 
   it('calculates pts+rebs', () => {
@@ -146,7 +154,7 @@ describe('calculate()', () => {
       line: 32.5,
     });
     expect(result.source).toBe('NegBinomial');
-    expect(result.blendedProb).toBeGreaterThan(0);
+    expect(result.over.blendedProb).toBeGreaterThan(0);
   });
 });
 
@@ -175,11 +183,17 @@ describe('Calculator component', () => {
     await user.type(screen.getByLabelText('Under Odds (American)'), '110');
     await user.click(screen.getByRole('button', { name: 'Calculate Edge' }));
 
-    // Verify results appear
+    // Verify results appear — both sides now render
     expect(screen.getByText('LeBron James')).toBeInTheDocument();
-    expect(screen.getByTestId('tier-badge')).toBeInTheDocument();
-    expect(screen.getByText(/Expected Value/)).toBeInTheDocument();
-    expect(screen.getByText(/Kelly Stake/)).toBeInTheDocument();
+    // Two tier badges (one per side)
+    expect(screen.getAllByTestId('tier-badge').length).toBe(2);
+    // Both sides have an Expected Value label
+    expect(screen.getAllByText(/Expected Value/).length).toBeGreaterThan(0);
+    // Both sides have a Kelly label
+    expect(screen.getAllByText(/Kelly/).length).toBeGreaterThan(0);
+    // Both side labels appear
+    expect(screen.getByText(/^OVER/)).toBeInTheDocument();
+    expect(screen.getByText(/^UNDER/)).toBeInTheDocument();
   });
 
   it('does not show results before submission in single mode', async () => {

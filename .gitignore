@@ -4,3 +4,6 @@ out/
 .env
 .env.local
 *.tsbuildinfo
+
+# Claude Code user-local config (per-machine, not shared)
+.claude/

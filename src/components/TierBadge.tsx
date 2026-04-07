@@ -1,6 +1,6 @@
-import type { CalculationResult } from './types';
+import type { Tier } from '../lib/math';
 
-const TIER_STYLES: Record<CalculationResult['tier'], string> = {
+const TIER_STYLES: Record<Tier, string> = {
   HIGH: 'bg-emerald-600/20 text-emerald-400 border border-emerald-600/30',
   MEDIUM: 'bg-amber-500/15 text-amber-400 border border-amber-500/25',
   LOW: 'bg-orange-500/15 text-orange-400 border border-orange-500/25',
@@ -8,7 +8,7 @@ const TIER_STYLES: Record<CalculationResult['tier'], string> = {
 };
 
 interface TierBadgeProps {
-  tier: CalculationResult['tier'];
+  tier: Tier;
 }
 
 export default function TierBadge({ tier }: TierBadgeProps) {

@@ -9,9 +9,22 @@ import type { NBAGame } from '../src/lib/oddsApi';
 jest.mock('../src/lib/oddsApi');
 const mockFetchGames = oddsApi.fetchGames as jest.MockedFunction<typeof oddsApi.fetchGames>;
 
+// Build sample games dynamically based on "now" so the "Today" header matches.
+function todayAt(hour: number): string {
+  const d = new Date();
+  d.setHours(hour, 0, 0, 0);
+  return d.toISOString();
+}
+function tomorrowAt(hour: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  d.setHours(hour, 0, 0, 0);
+  return d.toISOString();
+}
+
 const sampleGames: NBAGame[] = [
-  { id: 'game1', homeTeam: 'Boston Celtics', awayTeam: 'New York Knicks', startTime: '2026-04-04T19:30:00Z' },
-  { id: 'game2', homeTeam: 'Los Angeles Lakers', awayTeam: 'Golden State Warriors', startTime: '2026-04-04T22:00:00Z' },
+  { id: 'game1', homeTeam: 'Boston Celtics', awayTeam: 'New York Knicks', startTime: todayAt(19) },
+  { id: 'game2', homeTeam: 'Los Angeles Lakers', awayTeam: 'Golden State Warriors', startTime: todayAt(22) },
 ];
 
 describe('GameSelector', () => {
@@ -35,7 +48,24 @@ describe('GameSelector', () => {
       expect(screen.getByText(/New York Knicks/)).toBeInTheDocument();
     });
     expect(screen.getByText(/Golden State Warriors/)).toBeInTheDocument();
-    expect(screen.getByText(/Today's Games \(2\)/i)).toBeInTheDocument();
+    expect(screen.getByText(/Upcoming Games \(2\)/i)).toBeInTheDocument();
+  });
+
+  it('groups games by date with a date header', async () => {
+    const multiDayGames: NBAGame[] = [
+      { id: 'today1', homeTeam: 'Home A', awayTeam: 'Away A', startTime: todayAt(19) },
+      { id: 'tom1', homeTeam: 'Home B', awayTeam: 'Away B', startTime: tomorrowAt(19) },
+    ];
+    mockFetchGames.mockResolvedValue(multiDayGames);
+    render(<GameSelector onGamesSelected={onGamesSelected} />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Away A/)).toBeInTheDocument();
+    });
+
+    // Both headers should be present
+    expect(screen.getByText(/Today —/i)).toBeInTheDocument();
+    expect(screen.getByText(/Tomorrow —/i)).toBeInTheDocument();
   });
 
   it('shows error when fetch fails', async () => {

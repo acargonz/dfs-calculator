@@ -1,7 +1,56 @@
 import type { PlayerProp } from './oddsApi';
-import type { PlayerSeasonAvg } from './playerStats';
+import type { PlayerSeasonAvg, SeasonType } from './playerStats';
 import type { CalculationResult, PlayerFormData } from '../components/types';
 import { calculate } from '../components/Calculator';
+import { pickBestSide } from './twoSidedCalc';
+import type { Tier } from './math';
+
+/**
+ * Postseason Kelly multiplier.
+ *
+ * NBA playoffs and Finals games carry more variance per pick than the regular
+ * season — rotations tighten, defensive scheming intensifies, single-game
+ * results are more impactful for the slate. The math layer (math.ts) is
+ * deliberately read-only and unaware of season context, so we apply the
+ * postseason discipline here at the orchestration boundary by scaling the
+ * already-quarter-Kelly stake by 0.75 (effectively 3/16 Kelly for postseason).
+ *
+ * Applied identically to the over and under sides so the relative comparison
+ * the AI sees is unchanged — only the absolute stake shrinks.
+ */
+export const POSTSEASON_KELLY_MULTIPLIER = 0.75;
+
+/**
+ * Returns true when the player's stat blend already includes postseason
+ * games — the calculator's Kelly stakes for that row should be reduced.
+ */
+export function isPostseasonSlice(seasonType: SeasonType | undefined): boolean {
+  return seasonType === 'playoffs' || seasonType === 'finals';
+}
+
+/**
+ * Apply the postseason Kelly multiplier to a CalculationResult, returning a
+ * new result with both sides' kellyStake scaled. Pure function — no mutation.
+ * The other fields (probabilities, EV, tier) are intentionally untouched
+ * because the model itself is unchanged; we only resize the wager.
+ */
+export function applyPostseasonKellyReduction(
+  result: CalculationResult,
+  seasonType: SeasonType | undefined,
+): CalculationResult {
+  if (!isPostseasonSlice(seasonType)) return result;
+  return {
+    ...result,
+    over: {
+      ...result.over,
+      kellyStake: result.over.kellyStake * POSTSEASON_KELLY_MULTIPLIER,
+    },
+    under: {
+      ...result.under,
+      kellyStake: result.under.kellyStake * POSTSEASON_KELLY_MULTIPLIER,
+    },
+  };
+}
 
 export interface BatchInput {
   props: PlayerProp[];
@@ -21,9 +70,20 @@ export interface BatchPlayerResult {
   mean: number;
   overOdds: number;
   underOdds: number;
+  /** Sportsbook this prop came from (optional for legacy/test fixtures). */
+  bookmaker?: string;
   result: CalculationResult | null;
   status: BatchStatus;
   statusMessage?: string;
+
+  /**
+   * Which season(s) the player's stats represent. Mirrors the value from
+   * PlayerSeasonAvg.seasonType. Optional so legacy fixtures and pre-postseason
+   * cached payloads still type-check. When 'playoffs' or 'finals', the Kelly
+   * stake on result.over/under has already been multiplied by
+   * POSTSEASON_KELLY_MULTIPLIER (0.75).
+   */
+  seasonType?: SeasonType;
 }
 
 export interface BatchResult {
@@ -56,17 +116,36 @@ export function getStatMean(
     case 'pts+asts': return stats.points + stats.assists;
     case 'rebs+asts': return stats.rebounds + stats.assists;
     case 'fantasy': {
-      // DraftKings standard NBA scoring
+      // PrizePicks / Underdog Fantasy NBA scoring — identical formula on
+      // both platforms. DraftKings Pick6 does not offer a fantasy-score
+      // prop, so there's only one formula we ever need to compute here.
+      //   FPTS = PTS*1 + REB*1.2 + AST*1.5 + STL*3 + BLK*3 + TO*(-1)
+      // Three-pointers are intentionally NOT re-scored — neither platform
+      // grants a bonus for them beyond the points already baked into PTS.
       const to = stats.turnovers ?? 0;
-      return (stats.points * 1) + (stats.rebounds * 1.25) + (stats.assists * 1.5)
-           + (stats.steals * 2) + (stats.blocks * 2) + (stats.threes * 0.5) - (to * 0.5);
+      return (stats.points * 1) + (stats.rebounds * 1.2) + (stats.assists * 1.5)
+           + (stats.steals * 3) + (stats.blocks * 3) - (to * 1);
     }
     default: return 0;
   }
 }
 
 /**
- * Compute summary counts from results.
+ * Returns the "stronger" side of a two-sided result, used for summary counts
+ * and sorting. The actual betting decision is left to the AI ensemble — this
+ * helper only governs how the row appears in the calculator table.
+ */
+export function bestTier(result: CalculationResult): Tier {
+  return result[pickBestSide(result)].tier;
+}
+
+export function bestEV(result: CalculationResult): number {
+  return result[pickBestSide(result)].ev;
+}
+
+/**
+ * Compute summary counts from results. The tier shown for a row is the tier
+ * of whichever side (over/under) has the stronger edge.
  */
 export function computeSummary(players: BatchPlayerResult[]): BatchResult['summary'] {
   const summary = { high: 0, medium: 0, low: 0, reject: 0, errors: 0 };
@@ -74,7 +153,7 @@ export function computeSummary(players: BatchPlayerResult[]): BatchResult['summa
     if (p.status !== 'success' || !p.result) {
       summary.errors++;
     } else {
-      switch (p.result.tier) {
+      switch (bestTier(p.result)) {
         case 'HIGH': summary.high++; break;
         case 'MEDIUM': summary.medium++; break;
         case 'LOW': summary.low++; break;
@@ -86,7 +165,8 @@ export function computeSummary(players: BatchPlayerResult[]): BatchResult['summa
 }
 
 /**
- * Sort results: HIGH first, then by EV descending.
+ * Sort results: HIGH first, then by EV descending. Both metrics use the
+ * stronger side from the two-sided evaluation.
  */
 const TIER_RANK: Record<string, number> = { HIGH: 0, MEDIUM: 1, LOW: 2, REJECT: 3 };
 
@@ -97,10 +177,11 @@ export function sortResults(players: BatchPlayerResult[]): BatchPlayerResult[] {
     if (a.status === 'success' && b.status !== 'success') return -1;
     if (!a.result || !b.result) return 0;
 
-    const tierDiff = (TIER_RANK[a.result.tier] ?? 4) - (TIER_RANK[b.result.tier] ?? 4);
+    const tierDiff =
+      (TIER_RANK[bestTier(a.result)] ?? 4) - (TIER_RANK[bestTier(b.result)] ?? 4);
     if (tierDiff !== 0) return tierDiff;
 
-    return b.result.ev - a.result.ev;
+    return bestEV(b.result) - bestEV(a.result);
   });
 }
 
@@ -133,9 +214,11 @@ export async function processBatch(
           mean: 0,
           overOdds: prop.overOdds,
           underOdds: prop.underOdds,
+          bookmaker: prop.bookmaker,
           result: null,
           status: 'api_error',
           statusMessage: `No ${prop.statType} average found`,
+          seasonType: playerStats.seasonType,
         });
         continue;
       }
@@ -154,7 +237,10 @@ export async function processBatch(
         injuryModifier: input.injuryModifier,
       };
 
-      const result = calculate(formData);
+      // Run the (regular-season-blind) math, then apply postseason
+      // discipline by scaling the Kelly stake. Math layer stays untouched.
+      const rawResult = calculate(formData);
+      const result = applyPostseasonKellyReduction(rawResult, playerStats.seasonType);
 
       results.push({
         playerName: prop.playerName,
@@ -164,8 +250,10 @@ export async function processBatch(
         mean,
         overOdds: prop.overOdds,
         underOdds: prop.underOdds,
+        bookmaker: prop.bookmaker,
         result,
         status: 'success',
+        seasonType: playerStats.seasonType,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error';
@@ -177,6 +265,7 @@ export async function processBatch(
         mean: 0,
         overOdds: prop.overOdds,
         underOdds: prop.underOdds,
+        bookmaker: prop.bookmaker,
         result: null,
         status: message.includes('not found') ? 'player_not_found' : 'api_error',
         statusMessage: message,
