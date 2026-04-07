@@ -1,6 +1,6 @@
 /**
  * /api/resolve-picks — nightly cron that resolves yesterday's (and any older
- * unresolved) picks against balldontlie box scores.
+ * unresolved) picks against ESPN game-summary box scores.
  *
  * Triggered by:
  *   - Vercel cron (see vercel.json) once per day after all NBA games end
@@ -10,11 +10,26 @@
  *   Same pattern as /api/snapshot-closing-lines — requires
  *   `Authorization: Bearer <CRON_SECRET>` in production; open in dev.
  *
+ * Data source: ESPN public scoreboard + game summary endpoints.
+ *
+ * Why not balldontlie /v1/stats?
+ *   It was the original source, but that endpoint requires the paid
+ *   ALL-STAR tier ($9.99/mo). Our free key gets 401. Rather than force a
+ *   paid dependency, we switched to ESPN's public game-summary API which
+ *   is completely free, no-auth, documented, and stable. The per-pick
+ *   resolver logic is unchanged — only the box-score ingestion layer was
+ *   swapped out. See src/lib/espnBoxScore.ts for the ESPN → RawBoxScore
+ *   adapter and its unit tests.
+ *
  * IO contract:
  *   1. Query Supabase for all picks where won IS NULL and date < today.
- *   2. Group by date so we only fetch each box-score day once.
- *   3. For each date, page through balldontlie /v1/stats?dates[]=<date>
- *      until meta.next_cursor is null.
+ *   2. Group by date so we only fetch each ESPN scoreboard once.
+ *   3. For each date:
+ *        a. Fetch the ESPN scoreboard to enumerate game IDs.
+ *        b. Fetch each game's /summary in parallel (sequentially per date
+ *           to stay polite, but parallel within the date's games).
+ *        c. Flatten every athlete into a single box-score array via
+ *           flattenGameSummary().
  *   4. For each pending pick, call resolvePick() from src/lib/pickResolver
  *      against the fetched box scores. Collect outcomes and DNPs.
  *   5. Batch-update the picks table with actual_value / won / pushed /
@@ -23,21 +38,28 @@
  *
  * All business logic (stat math, name match, push handling) lives in the
  * pure-math library. This route is IO-only. That's enforced by keeping the
- * route zero-test-coverage and all tests on pickResolver.ts.
+ * route zero-test-coverage and all tests on pickResolver.ts + espnBoxScore.ts.
  *
  * Idempotent: re-running is a no-op for already-resolved rows because the
- * WHERE clause filters `won IS NULL`.
+ * WHERE clause filters `won IS NULL AND pushed = false`.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabase } from '@/lib/supabase';
+import { resolvePick } from '@/lib/pickResolver';
 import {
-  resolvePick,
-  type PlayerIdentity,
-  type RawBoxScore,
-} from '@/lib/pickResolver';
+  flattenGameSummary,
+  type EspnGameSummary,
+  type FlatBoxScore,
+} from '@/lib/espnBoxScore';
 
-const BDL_BASE = 'https://api.balldontlie.io/v1';
+// Vercel Hobby tier allows 60s max duration for serverless functions.
+// This route makes ~11 outbound requests per date (1 scoreboard + ~10
+// summaries) and ~50 Supabase updates, so 60s is plenty of headroom.
+export const runtime = 'nodejs';
+export const maxDuration = 60;
+
+const ESPN_BASE = 'https://site.api.espn.com/apis/site/v2/sports/basketball/nba';
 
 /**
  * Upper bound on how far back to search for unresolved picks. Prevents the
@@ -45,26 +67,6 @@ const BDL_BASE = 'https://api.balldontlie.io/v1';
  * thousands of stale rows). 14 days is plenty for typical recovery.
  */
 const MAX_BACKFILL_DAYS = 14;
-
-/**
- * Max pages per date (balldontlie caps per_page at 100 for the stats endpoint).
- * A normal slate of 10 games has ~240 player-game rows, so 3 pages is enough.
- * Set to 10 to cover double-header nights + margin.
- */
-const MAX_PAGES_PER_DATE = 10;
-
-/**
- * Typed subset of the balldontlie /v1/stats response. We only pull the
- * fields the resolver actually reads — `RawBoxScore` + `player` identity.
- */
-interface BdlStatRow extends RawBoxScore {
-  player: PlayerIdentity & { id: number };
-}
-
-interface BdlStatsResponse {
-  data: BdlStatRow[];
-  meta: { next_cursor: number | null; per_page: number };
-}
 
 interface ResolveResponse {
   ok: boolean;
@@ -98,39 +100,60 @@ function daysAgoUTC(n: number): string {
 }
 
 /**
- * Page through balldontlie's /v1/stats endpoint for a given date, collecting
- * every player-game row. Returns the full concatenated array.
+ * Convert a YYYY-MM-DD date to ESPN's compact YYYYMMDD scoreboard param.
+ */
+function isoToCompact(iso: string): string {
+  return iso.replaceAll('-', '');
+}
+
+/**
+ * Fetch every box score for a given date by:
+ *   1. Calling the ESPN scoreboard to get that day's game IDs
+ *   2. Fetching each game's summary in parallel
+ *   3. Flattening all athletes across all games into a single array
  *
- * Handles pagination via the cursor token. Breaks on empty data or after
- * MAX_PAGES_PER_DATE pages as a safety guard.
+ * Returns a single flat array regardless of how many games were played.
+ * An empty array means ESPN had no games for that date (off-day or schema
+ * drift). The resolver will treat that as no-match for every pending pick.
  */
 async function fetchBoxScoresForDate(
   date: string,
-  apiKey: string,
-): Promise<BdlStatRow[]> {
-  const all: BdlStatRow[] = [];
-  let cursor: number | null = null;
+): Promise<{ boxes: FlatBoxScore[]; gameCount: number }> {
+  const scoreboardUrl = `${ESPN_BASE}/scoreboard?dates=${isoToCompact(date)}`;
+  const scoreboardRes = await fetch(scoreboardUrl);
+  if (!scoreboardRes.ok) {
+    throw new Error(`ESPN scoreboard error (${scoreboardRes.status}) for ${date}`);
+  }
+  const scoreboard = (await scoreboardRes.json()) as {
+    events?: Array<{ id?: string | number }>;
+  };
+  const events = scoreboard.events ?? [];
+  const gameIds = events
+    .map((e) => (e.id !== undefined ? String(e.id) : null))
+    .filter((id): id is string => id !== null);
 
-  for (let page = 0; page < MAX_PAGES_PER_DATE; page++) {
-    const url = new URL(`${BDL_BASE}/stats`);
-    url.searchParams.set('dates[]', date);
-    url.searchParams.set('per_page', '100');
-    if (cursor !== null) url.searchParams.set('cursor', String(cursor));
-
-    const res = await fetch(url.toString(), {
-      headers: { Authorization: apiKey },
-    });
-    if (!res.ok) {
-      throw new Error(`balldontlie stats error (${res.status}) for ${date}`);
-    }
-    const json = (await res.json()) as BdlStatsResponse;
-    all.push(...(json.data ?? []));
-
-    if (!json.meta?.next_cursor) break;
-    cursor = json.meta.next_cursor;
+  if (gameIds.length === 0) {
+    return { boxes: [], gameCount: 0 };
   }
 
-  return all;
+  // Fetch all game summaries in parallel — ESPN can handle it and we want
+  // the whole date's data batched together.
+  const summaryResults = await Promise.all(
+    gameIds.map(async (id) => {
+      const summaryUrl = `${ESPN_BASE}/summary?event=${id}`;
+      const res = await fetch(summaryUrl);
+      if (!res.ok) {
+        throw new Error(`ESPN summary error (${res.status}) for game ${id}`);
+      }
+      return (await res.json()) as EspnGameSummary;
+    }),
+  );
+
+  const boxes: FlatBoxScore[] = [];
+  for (const summary of summaryResults) {
+    boxes.push(...flattenGameSummary(summary));
+  }
+  return { boxes, gameCount: gameIds.length };
 }
 
 export async function GET(request: NextRequest) {
@@ -144,14 +167,6 @@ export async function GET(request: NextRequest) {
     if (auth !== `Bearer ${cronSecret}`) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
-  }
-
-  const bdlKey = process.env.BALLDONTLIE_API_KEY;
-  if (!bdlKey) {
-    return NextResponse.json(
-      { error: 'BALLDONTLIE_API_KEY not configured' },
-      { status: 500 },
-    );
   }
 
   const supabase = getSupabase();
@@ -211,7 +226,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(emptyResponse);
   }
 
-  // 2. Group picks by date so each box-score day is fetched once
+  // 2. Group picks by date so each ESPN scoreboard is fetched once
   const byDate = new Map<string, typeof pendingPicks>();
   for (const p of pendingPicks) {
     const list = byDate.get(p.date) ?? [];
@@ -219,12 +234,13 @@ export async function GET(request: NextRequest) {
     byDate.set(p.date, list);
   }
 
-  // 3. Fetch box scores for each unique date (sequentially to stay under
-  //    balldontlie's free-tier rate limit of 5 req/min)
-  const boxScoresByDate = new Map<string, BdlStatRow[]>();
+  // 3. Fetch box scores for each unique date. Dates are fetched sequentially
+  //    (we're polite to ESPN — it's free) but each date's games are fetched
+  //    in parallel inside fetchBoxScoresForDate.
+  const boxScoresByDate = new Map<string, FlatBoxScore[]>();
   for (const date of byDate.keys()) {
     try {
-      const boxes = await fetchBoxScoresForDate(date, bdlKey);
+      const { boxes } = await fetchBoxScoresForDate(date);
       boxScoresByDate.set(date, boxes);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Unknown';
@@ -287,7 +303,7 @@ export async function GET(request: NextRequest) {
       case 'no_match':
         noMatchCount++;
         // Leave untouched — the player may show up in a later cron run
-        // (e.g. balldontlie lag). MAX_BACKFILL_DAYS provides the upper bound.
+        // (e.g. ESPN lag). MAX_BACKFILL_DAYS provides the upper bound.
         break;
 
       case 'unsupported_stat':
@@ -298,7 +314,7 @@ export async function GET(request: NextRequest) {
   }
 
   // 5. Apply updates in sequence. Each row takes ~50ms on Supabase free tier
-  //    so batches of 100 complete in ~5 seconds — well under the 10-second
+  //    so batches of 100 complete in ~5 seconds — well under the 60-second
   //    Vercel cron timeout. Sequential not parallel to avoid hammering the
   //    connection pool on the anon role.
   const resolvedAt = new Date().toISOString();

@@ -41,6 +41,12 @@ import {
   type PendingPick,
 } from '@/lib/closingLineSnapshot';
 
+// Vercel Hobby tier allows 60s max duration for serverless functions.
+// This route fans out to ~10 Odds API calls (1 per game) + ~50 Supabase
+// updates, so 60s is plenty of headroom.
+export const runtime = 'nodejs';
+export const maxDuration = 60;
+
 interface SnapshotResponse {
   ok: boolean;
   pendingPicks: number;

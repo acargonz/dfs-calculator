@@ -17,13 +17,22 @@ export default function Home() {
               NBA player prop edge calculator. Select games or paste lines to find the best plays.
             </p>
           </div>
-          <a
-            href="/history"
-            className="shrink-0 text-sm underline opacity-70 hover:opacity-100"
-            style={{ color: 'var(--text-secondary)' }}
-          >
-            Pick history →
-          </a>
+          <nav className="flex shrink-0 items-center gap-4 text-sm">
+            <a
+              href="/calibration"
+              className="underline opacity-70 hover:opacity-100"
+              style={{ color: 'var(--text-secondary)' }}
+            >
+              Calibration →
+            </a>
+            <a
+              href="/history"
+              className="underline opacity-70 hover:opacity-100"
+              style={{ color: 'var(--text-secondary)' }}
+            >
+              Pick history →
+            </a>
+          </nav>
         </header>
 
         <div className="mb-8">

@@ -35,13 +35,22 @@ export default function HistoryPage() {
               Calibration metrics + closing line value across all resolved picks.
             </p>
           </div>
-          <a
-            href="/"
-            className="text-sm underline opacity-70 hover:opacity-100"
-            style={{ color: 'var(--text-secondary)' }}
-          >
-            ← Back to calculator
-          </a>
+          <nav className="flex items-center gap-4 text-sm">
+            <a
+              href="/calibration"
+              className="underline opacity-70 hover:opacity-100"
+              style={{ color: 'var(--text-secondary)' }}
+            >
+              Calibration →
+            </a>
+            <a
+              href="/"
+              className="underline opacity-70 hover:opacity-100"
+              style={{ color: 'var(--text-secondary)' }}
+            >
+              ← Back to calculator
+            </a>
+          </nav>
         </header>
 
         <HistoryClient />

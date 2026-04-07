@@ -76,6 +76,29 @@ export interface BootstrapResult {
   upper: number;
 }
 
+/** One bucket of a reliability curve. */
+export interface ReliabilityBin {
+  /** Inclusive lower edge of the bin's predicted-probability range. */
+  binLow: number;
+  /** Exclusive upper edge of the bin (the last bin is inclusive). */
+  binHigh: number;
+  /** Number of predictions that fell into this bin. */
+  count: number;
+  /**
+   * Mean predicted probability across the bin's predictions. NaN for empty bins.
+   * This is what the model *said* would happen on average.
+   */
+  predictedMean: number;
+  /**
+   * Observed win rate (wins / count) across the bin's predictions. NaN for
+   * empty bins. This is what *actually* happened.
+   *
+   * A perfectly-calibrated model has predictedMean ≈ observedRate in every
+   * bin — plotting (predictedMean, observedRate) falls on the diagonal y=x.
+   */
+  observedRate: number;
+}
+
 // ===================================================================
 // Local helpers
 // ===================================================================
@@ -409,6 +432,92 @@ export function maxDrawdownPct(
     if (dd > maxDD) maxDD = dd;
   }
   return maxDD;
+}
+
+// ===================================================================
+// Reliability curve
+// ===================================================================
+
+/**
+ * Bucket predictions by their predicted probability and report, for each
+ * bucket, the mean predicted probability and the observed win rate.
+ *
+ * This is the single most important calibration diagnostic: when the model
+ * says "60% to hit", do the bets in that bucket actually win 60% of the time?
+ * A well-calibrated model produces a reliability curve that falls on the
+ * diagonal y=x. A model that's overconfident sees predictedMean consistently
+ * > observedRate in high-probability bins. Underconfident is the opposite.
+ *
+ * The default 10 bins gives 0.0–0.1, 0.1–0.2, …, 0.9–1.0. The last bin is
+ * inclusive on the upper edge so a prediction of exactly 1.0 lands in it.
+ *
+ * Empty bins (no predictions in that range) are still returned with count=0,
+ * predictedMean=NaN, observedRate=NaN so the caller can render a placeholder
+ * gap in the plot. The returned array always has length `binCount`.
+ *
+ * Throws if `binCount` < 1. Empty predictions returns an array of empty bins.
+ *
+ * Why we bin rather than just plot each point:
+ *   Bet-level predictions are sparse (dozens of 0.55s, maybe one 0.91). A
+ *   scatter plot of raw points is almost useless. Binning lets us compute
+ *   observed rates per neighborhood and see the miscalibration shape.
+ *
+ * Minimum samples per bin:
+ *   A bin with 3 predictions is too noisy to trust. Callers that render the
+ *   curve should consider dimming or hiding bins with count < 5-10. This
+ *   function does NOT filter — it returns the raw bucketing so the caller
+ *   decides what threshold to use.
+ */
+export function reliabilityCurve(
+  predictions: Prediction[],
+  binCount: number = 10,
+): ReliabilityBin[] {
+  if (binCount < 1) {
+    throw new Error('binCount must be >= 1');
+  }
+  const width = 1 / binCount;
+
+  // Initialize empty bins. Always return `binCount` entries even for empty
+  // input — the caller should know which buckets got zero data.
+  const bins: ReliabilityBin[] = Array.from({ length: binCount }, (_, i) => ({
+    binLow: i * width,
+    binHigh: (i + 1) * width,
+    count: 0,
+    predictedMean: NaN,
+    observedRate: NaN,
+  }));
+
+  // Aggregators, one per bin. Kept out of the returned objects so we don't
+  // mutate `predictedMean` / `observedRate` while we're still summing.
+  const sumProb: number[] = new Array(binCount).fill(0);
+  const sumOutcome: number[] = new Array(binCount).fill(0);
+
+  for (const pred of predictions) {
+    // Guard against NaN / out-of-range — skip silently so one bad row doesn't
+    // destroy the whole plot. (parseStatsRow already filters, but defence.)
+    if (!Number.isFinite(pred.probability)) continue;
+    if (pred.probability < 0 || pred.probability > 1) continue;
+
+    // Which bin? floor(p / width) gives 0..binCount, with 1.0 landing at
+    // index binCount which is out of range. Clamp to the last bin so the
+    // final bin is effectively [lastLow, 1.0] inclusive.
+    let idx = Math.floor(pred.probability / width);
+    if (idx >= binCount) idx = binCount - 1;
+
+    bins[idx].count += 1;
+    sumProb[idx] += pred.probability;
+    sumOutcome[idx] += pred.outcome;
+  }
+
+  // Finalize means for non-empty bins
+  for (let i = 0; i < binCount; i++) {
+    if (bins[i].count > 0) {
+      bins[i].predictedMean = sumProb[i] / bins[i].count;
+      bins[i].observedRate = sumOutcome[i] / bins[i].count;
+    }
+  }
+
+  return bins;
 }
 
 // ===================================================================

@@ -12,6 +12,7 @@ import {
   maxDrawdown,
   maxDrawdownPct,
   bootstrapCI,
+  reliabilityCurve,
   type Prediction,
   type ResolvedPick,
   type CLVPick,
@@ -624,5 +625,183 @@ describe('bootstrapCI', () => {
     const width90 = ci90.upper - ci90.lower;
     const width99 = ci99.upper - ci99.lower;
     expect(width99).toBeGreaterThanOrEqual(width90);
+  });
+});
+
+// ============================================================================
+// reliabilityCurve
+// ============================================================================
+
+describe('reliabilityCurve', () => {
+  test('empty input returns binCount empty bins', () => {
+    const bins = reliabilityCurve([], 10);
+    expect(bins).toHaveLength(10);
+    for (const b of bins) {
+      expect(b.count).toBe(0);
+      expect(Number.isNaN(b.predictedMean)).toBe(true);
+      expect(Number.isNaN(b.observedRate)).toBe(true);
+    }
+  });
+
+  test('bin edges cover [0,1] with default 10 bins', () => {
+    const bins = reliabilityCurve([], 10);
+    expect(bins[0].binLow).toBe(0);
+    expect(bins[0].binHigh).toBeCloseTo(0.1, 10);
+    expect(bins[9].binLow).toBeCloseTo(0.9, 10);
+    expect(bins[9].binHigh).toBeCloseTo(1.0, 10);
+  });
+
+  test('custom bin count produces the requested number of bins', () => {
+    expect(reliabilityCurve([], 5)).toHaveLength(5);
+    expect(reliabilityCurve([], 20)).toHaveLength(20);
+    expect(reliabilityCurve([], 1)).toHaveLength(1);
+  });
+
+  test('throws for binCount < 1', () => {
+    expect(() => reliabilityCurve([], 0)).toThrow('binCount must be >= 1');
+    expect(() => reliabilityCurve([], -5)).toThrow('binCount must be >= 1');
+  });
+
+  test('perfectly calibrated predictions land on the diagonal', () => {
+    // 10 predictions at 0.55, 5 wins / 5 losses → predictedMean 0.55,
+    // observed 0.5. Close to the diagonal (perfect for a symmetric sample).
+    const preds: Prediction[] = [
+      { probability: 0.55, outcome: 1 },
+      { probability: 0.55, outcome: 1 },
+      { probability: 0.55, outcome: 1 },
+      { probability: 0.55, outcome: 1 },
+      { probability: 0.55, outcome: 1 },
+      { probability: 0.55, outcome: 0 },
+      { probability: 0.55, outcome: 0 },
+      { probability: 0.55, outcome: 0 },
+      { probability: 0.55, outcome: 0 },
+      { probability: 0.55, outcome: 0 },
+    ];
+    const bins = reliabilityCurve(preds, 10);
+    // 0.55 lands in bin index 5 (0.5–0.6)
+    expect(bins[5].count).toBe(10);
+    expect(near(bins[5].predictedMean, 0.55)).toBe(true);
+    expect(bins[5].observedRate).toBe(0.5);
+    // All other bins empty
+    for (let i = 0; i < 10; i++) {
+      if (i === 5) continue;
+      expect(bins[i].count).toBe(0);
+    }
+  });
+
+  test('overconfident model shows predictedMean > observedRate in high bins', () => {
+    // 10 predictions at 0.9, but only 5 actually win → model is overconfident.
+    const preds: Prediction[] = Array.from({ length: 10 }, (_, i) => ({
+      probability: 0.9,
+      outcome: i < 5 ? 1 : 0,
+    }));
+    const bins = reliabilityCurve(preds, 10);
+    expect(bins[9].count).toBe(10);
+    expect(near(bins[9].predictedMean, 0.9)).toBe(true);
+    expect(bins[9].observedRate).toBe(0.5);
+    expect(bins[9].predictedMean).toBeGreaterThan(bins[9].observedRate);
+  });
+
+  test('underconfident model shows predictedMean < observedRate', () => {
+    // 10 predictions at 0.2, but 7 actually win → model is way underconfident.
+    const preds: Prediction[] = Array.from({ length: 10 }, (_, i) => ({
+      probability: 0.2,
+      outcome: i < 7 ? 1 : 0,
+    }));
+    const bins = reliabilityCurve(preds, 10);
+    expect(bins[2].count).toBe(10);
+    expect(near(bins[2].predictedMean, 0.2)).toBe(true);
+    expect(bins[2].observedRate).toBe(0.7);
+    expect(bins[2].predictedMean).toBeLessThan(bins[2].observedRate);
+  });
+
+  test('prediction of exactly 1.0 lands in the last bin (inclusive upper edge)', () => {
+    const preds: Prediction[] = [
+      { probability: 1.0, outcome: 1 },
+      { probability: 1.0, outcome: 0 },
+    ];
+    const bins = reliabilityCurve(preds, 10);
+    expect(bins[9].count).toBe(2);
+    expect(bins[9].predictedMean).toBe(1.0);
+    expect(bins[9].observedRate).toBe(0.5);
+  });
+
+  test('prediction of exactly 0.0 lands in the first bin', () => {
+    const preds: Prediction[] = [
+      { probability: 0.0, outcome: 0 },
+      { probability: 0.0, outcome: 1 },
+    ];
+    const bins = reliabilityCurve(preds, 10);
+    expect(bins[0].count).toBe(2);
+    expect(bins[0].predictedMean).toBe(0.0);
+    expect(bins[0].observedRate).toBe(0.5);
+  });
+
+  test('bin-boundary values land in the upper bin', () => {
+    // 0.1 should land in bin index 1 (0.1–0.2), not bin 0 (0.0–0.1)
+    const preds: Prediction[] = [{ probability: 0.1, outcome: 1 }];
+    const bins = reliabilityCurve(preds, 10);
+    expect(bins[0].count).toBe(0);
+    expect(bins[1].count).toBe(1);
+  });
+
+  test('mixed distribution populates multiple bins independently', () => {
+    const preds: Prediction[] = [
+      // Bin 2 (0.2-0.3): 2 picks, 1 win
+      { probability: 0.25, outcome: 1 },
+      { probability: 0.25, outcome: 0 },
+      // Bin 5 (0.5-0.6): 4 picks, 2 wins
+      { probability: 0.55, outcome: 1 },
+      { probability: 0.55, outcome: 1 },
+      { probability: 0.55, outcome: 0 },
+      { probability: 0.55, outcome: 0 },
+      // Bin 8 (0.8-0.9): 2 picks, 2 wins (well calibrated!)
+      { probability: 0.85, outcome: 1 },
+      { probability: 0.85, outcome: 1 },
+    ];
+    const bins = reliabilityCurve(preds, 10);
+
+    expect(bins[2].count).toBe(2);
+    expect(bins[2].observedRate).toBe(0.5);
+
+    expect(bins[5].count).toBe(4);
+    expect(bins[5].observedRate).toBe(0.5);
+
+    expect(bins[8].count).toBe(2);
+    expect(bins[8].observedRate).toBe(1.0);
+
+    // Empty bins stay NaN
+    expect(Number.isNaN(bins[0].observedRate)).toBe(true);
+    expect(Number.isNaN(bins[1].observedRate)).toBe(true);
+    expect(Number.isNaN(bins[9].observedRate)).toBe(true);
+  });
+
+  test('skips out-of-range probabilities silently', () => {
+    const preds: Prediction[] = [
+      { probability: 0.5, outcome: 1 },
+      { probability: -0.1 as unknown as number, outcome: 0 },
+      { probability: 1.5 as unknown as number, outcome: 1 },
+      { probability: NaN as unknown as number, outcome: 0 },
+    ];
+    const bins = reliabilityCurve(preds, 10);
+    // Only the 0.5 should have been counted
+    let totalCount = 0;
+    for (const b of bins) totalCount += b.count;
+    expect(totalCount).toBe(1);
+    expect(bins[5].count).toBe(1);
+  });
+
+  test('5-bin reliability curve bucketing', () => {
+    // With 5 bins, width = 0.2. 0.35 → bin 1, 0.75 → bin 3
+    const preds: Prediction[] = [
+      { probability: 0.35, outcome: 0 },
+      { probability: 0.75, outcome: 1 },
+    ];
+    const bins = reliabilityCurve(preds, 5);
+    expect(bins).toHaveLength(5);
+    expect(bins[1].count).toBe(1);
+    expect(bins[1].observedRate).toBe(0);
+    expect(bins[3].count).toBe(1);
+    expect(bins[3].observedRate).toBe(1);
   });
 });
