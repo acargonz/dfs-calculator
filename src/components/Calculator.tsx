@@ -6,6 +6,7 @@ import ResultsDisplay from './ResultsDisplay';
 import GameSelector from './GameSelector';
 import BatchResultsTable from './BatchResultsTable';
 import PasteInput from './PasteInput';
+import AIAnalysisPanel from './AIAnalysisPanel';
 import type { PlayerFormData, CalculationResult } from './types';
 import type { NBAGame, PlayerProp } from '../lib/oddsApi';
 import type { BatchResult } from '../lib/batchProcessor';
@@ -13,68 +14,30 @@ import type { ParsedPlayer } from '../lib/parsers';
 import { fetchGames, fetchProps, crossReferenceOdds } from '../lib/oddsApi';
 import { fetchPlayerStats } from '../lib/playerStats';
 import { processBatch } from '../lib/batchProcessor';
-import {
-  devigProbit,
-  modelCountingStat,
-  modelPoints,
-  blendProbabilities,
-  applyModifiers,
-  kellyStake,
-  assignTier,
-} from '../lib/math';
-import type { Modifier } from '../lib/math';
+import { evaluateBothSides } from '../lib/twoSidedCalc';
 
 type Mode = 'single' | 'batch';
 type BatchPhase = 'select' | 'processing' | 'results';
 
-function americanToDecimal(odds: number): number {
-  if (odds < 0) return 1 + 100 / Math.abs(odds);
-  return 1 + odds / 100;
-}
-
+/**
+ * Evaluate both sides of a prop. The calculator NEVER picks a direction —
+ * the AI ensemble decides over vs under based on the active Algorithmic
+ * Prompt filters (matchups, recent form, postseason context, etc.). This
+ * wrapper exists for backward compatibility with the test suite.
+ */
 function calculate(data: PlayerFormData): CalculationResult {
-  const fair = devigProbit(data.overOdds, data.underOdds);
-
-  const model =
-    data.statType === 'points'
-      ? modelPoints(data.mean, data.line, data.position)
-      : modelCountingStat(data.mean, data.line, data.position, data.statType);
-
-  let blended = blendProbabilities(model.overProb, fair.over, 0.6);
-
-  const modifiers: Modifier[] = [];
-  if (data.paceModifier !== 0) {
-    modifiers.push({ name: 'Pace', ppDelta: data.paceModifier });
-  }
-  if (data.injuryModifier !== 0) {
-    modifiers.push({ name: 'Injury', ppDelta: data.injuryModifier });
-  }
-  if (modifiers.length > 0) {
-    blended = applyModifiers(blended, modifiers);
-  }
-
-  const decimalOdds = americanToDecimal(data.overOdds);
-  const kelly = kellyStake(blended, decimalOdds, data.bankroll, data.kellyMode);
-
-  const tier = assignTier({
-    prob: blended,
-    ev: kelly.ev,
-    majorFlags: 0,
-    minorFlags: 0,
+  return evaluateBothSides({
+    statType: data.statType,
+    position: data.position,
+    mean: data.mean,
+    line: data.line,
+    overOdds: data.overOdds,
+    underOdds: data.underOdds,
+    bankroll: data.bankroll,
+    kellyMode: data.kellyMode,
+    paceModifier: data.paceModifier,
+    injuryModifier: data.injuryModifier,
   });
-
-  return {
-    fairOverProb: fair.over,
-    fairUnderProb: fair.under,
-    modelOverProb: model.overProb,
-    modelUnderProb: model.underProb,
-    blendedProb: blended,
-    ev: kelly.ev,
-    kellyStake: kelly.stake,
-    kellyFraction: kelly.fraction,
-    tier,
-    source: model.source,
-  };
 }
 
 export default function Calculator() {
@@ -368,6 +331,10 @@ export default function Calculator() {
               <div className="rounded-xl p-6" style={cardStyle}>
                 <BatchResultsTable results={batchResult} onClear={clearBatch} />
               </div>
+              <AIAnalysisPanel
+                batchResult={batchResult}
+                bankroll={parseFloat(bankroll) || 100}
+              />
             </>
           )}
         </>

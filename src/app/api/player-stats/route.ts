@@ -1,5 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { mapPosition } from '@/lib/playerStats';
+import {
+  blendStats,
+  computeBlendWeights,
+  determineSeasonType,
+  type PlayerSeasonSlice,
+  type RawStatsBlock,
+} from '@/lib/playerStatsBlend';
 
 /**
  * Compute the current NBA season string (e.g., "2025-26").
@@ -18,23 +25,49 @@ function getCurrentSeason(): string {
   return `${startYear}-${String(endYear).slice(-2)}`;
 }
 
-function getPbpStatsUrl(): string {
-  const season = getCurrentSeason();
+/**
+ * The NBA Finals start date for the current season, in YYYY-MM-DD format.
+ *
+ * Configurable via env var `NBA_FINALS_START_DATE`. If unset, defaults to
+ * June 4 of the season's calendar end-year (a reasonable historical median —
+ * Finals typically start the first week of June).
+ *
+ * Why we need this: PBP Stats / NBA Stats has no `SeasonType=Finals` value.
+ * Finals games are bundled into `SeasonType=Playoffs`. To split them out, we
+ * fetch the playoffs endpoint twice with `DateTo` / `DateFrom` filters
+ * relative to this date.
+ */
+function getFinalsStartDate(): string {
+  if (process.env.NBA_FINALS_START_DATE) {
+    return process.env.NBA_FINALS_START_DATE;
+  }
+  const now = new Date();
+  const month = now.getMonth();
+  const seasonEndYear = month >= 9 ? now.getFullYear() + 1 : now.getFullYear();
+  return `${seasonEndYear}-06-04`;
+}
+
+/** YYYY-MM-DD → YYYY-MM-DD of the previous calendar day (UTC). */
+function previousDay(dateStr: string): string {
+  const d = new Date(`${dateStr}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().split('T')[0];
+}
+
+function getRegularSeasonUrl(season: string): string {
   return `https://api.pbpstats.com/get-totals/nba?Season=${season}&SeasonType=Regular+Season&Type=Player`;
 }
 
-/**
- * Position mapping from team abbreviation context.
- * PBP Stats doesn't include position directly, so we use balldontlie
- * for position lookup, or default to a reasonable guess.
- * For now, we fetch position from balldontlie's free player search.
- */
-const BDL_BASE = 'https://api.balldontlie.io/v1';
+function getPlayoffsExFinalsUrl(season: string, finalsStart: string): string {
+  const dateTo = previousDay(finalsStart);
+  return `https://api.pbpstats.com/get-totals/nba?Season=${season}&SeasonType=Playoffs&Type=Player&DateTo=${dateTo}`;
+}
 
-// In-memory cache for the full PBP Stats dataset (refreshes per server restart)
-let pbpCache: PbpPlayer[] | null = null;
-let pbpCacheTime = 0;
-const CACHE_TTL = 1000 * 60 * 30; // 30 minutes
+function getFinalsUrl(season: string, finalsStart: string): string {
+  return `https://api.pbpstats.com/get-totals/nba?Season=${season}&SeasonType=Playoffs&Type=Player&DateFrom=${finalsStart}`;
+}
+
+const BDL_BASE = 'https://api.balldontlie.io/v1';
 
 interface PbpPlayer {
   Name: string;
@@ -49,26 +82,86 @@ interface PbpPlayer {
   Turnovers: number;
 }
 
-/**
- * Fetch and cache all NBA player season totals from PBP Stats.
- * Single request gets all ~500 players — no per-player API calls needed.
- */
-async function getPbpData(): Promise<PbpPlayer[]> {
-  if (pbpCache && Date.now() - pbpCacheTime < CACHE_TTL) {
-    return pbpCache;
-  }
+// In-memory cache for the three datasets (refreshes per server restart).
+// Cache key is implicit — there's only ever one entry, since the URLs are
+// derived from getCurrentSeason() + getFinalsStartDate() which are stable
+// for the entire server lifetime.
+interface PbpCache {
+  regular: PbpPlayer[] | null;
+  playoffs: PbpPlayer[] | null; // playoffs EXCLUDING Finals
+  finals: PbpPlayer[] | null;
+  fetchedAt: number;
+}
 
-  const res = await fetch(getPbpStatsUrl(), {
+let pbpCache: PbpCache = {
+  regular: null,
+  playoffs: null,
+  finals: null,
+  fetchedAt: 0,
+};
+
+const CACHE_TTL = 1000 * 60 * 30; // 30 minutes
+
+/**
+ * Fetch a single PBP Stats URL. Returns the player rows array. On HTTP
+ * error, throws so the caller can decide whether to tolerate the failure.
+ */
+async function fetchPbpUrl(url: string): Promise<PbpPlayer[]> {
+  const res = await fetch(url, {
     headers: { 'User-Agent': 'DFS-Calculator/1.0' },
   });
-
   if (!res.ok) {
     throw new Error(`PBP Stats API error (${res.status})`);
   }
-
   const data = await res.json();
-  pbpCache = data.multi_row_table_data as PbpPlayer[];
-  pbpCacheTime = Date.now();
+  return (data.multi_row_table_data ?? []) as PbpPlayer[];
+}
+
+/**
+ * Fetch all three datasets in parallel. Regular season is mandatory —
+ * if it fails, we throw. The two postseason fetches are tolerated:
+ *   - During the regular season, the playoff URLs return empty arrays.
+ *   - If PBP Stats rejects the date filter (unsupported on their endpoint),
+ *     we silently fall back to empty postseason data and the player's
+ *     blend will be regular-season-only.
+ *
+ * Cached for 30 minutes per server start.
+ */
+async function getPbpData(): Promise<PbpCache> {
+  if (
+    pbpCache.regular &&
+    pbpCache.playoffs &&
+    pbpCache.finals &&
+    Date.now() - pbpCache.fetchedAt < CACHE_TTL
+  ) {
+    return pbpCache;
+  }
+
+  const season = getCurrentSeason();
+  const finalsStart = getFinalsStartDate();
+
+  const [regularRes, playoffsRes, finalsRes] = await Promise.allSettled([
+    fetchPbpUrl(getRegularSeasonUrl(season)),
+    fetchPbpUrl(getPlayoffsExFinalsUrl(season, finalsStart)),
+    fetchPbpUrl(getFinalsUrl(season, finalsStart)),
+  ]);
+
+  if (regularRes.status === 'rejected') {
+    // Regular season is the must-have. Propagate the failure.
+    const reason =
+      regularRes.reason instanceof Error
+        ? regularRes.reason.message
+        : 'Unknown error';
+    throw new Error(`Regular season fetch failed: ${reason}`);
+  }
+
+  pbpCache = {
+    regular: regularRes.value,
+    playoffs: playoffsRes.status === 'fulfilled' ? playoffsRes.value : [],
+    finals: finalsRes.status === 'fulfilled' ? finalsRes.value : [],
+    fetchedAt: Date.now(),
+  };
+
   return pbpCache;
 }
 
@@ -87,8 +180,10 @@ function normalize(name: string): string {
 }
 
 /**
- * Find a player in the PBP Stats dataset by name.
- * Tries exact match first, then last-name match.
+ * Find a player in a PBP Stats dataset by fuzzy name match.
+ * Used ONLY against the regular-season dataset (the user's input arrives
+ * here first). Once we have the canonical name, we use exact match against
+ * the playoffs / finals datasets via findExactByCanonicalName.
  */
 function findPlayer(players: PbpPlayer[], searchName: string): PbpPlayer | null {
   const normalized = normalize(searchName);
@@ -107,11 +202,49 @@ function findPlayer(players: PbpPlayer[], searchName: string): PbpPlayer | null 
 
   // 3. Partial match — search name contained in player name or vice versa
   const partial = players.find(
-    (p) => normalize(p.Name).includes(normalized) || normalized.includes(normalize(p.Name))
+    (p) =>
+      normalize(p.Name).includes(normalized) ||
+      normalized.includes(normalize(p.Name)),
   );
   if (partial) return partial;
 
   return null;
+}
+
+/**
+ * Exact-match a canonical name (already known to be a real player from
+ * the regular-season dataset) against a postseason dataset. We trust
+ * NBA Stats to use the same name across SeasonTypes, so no fuzzy logic
+ * is needed here.
+ */
+function findExactByCanonicalName(
+  players: PbpPlayer[] | null,
+  canonicalName: string,
+): PbpPlayer | null {
+  if (!players) return null;
+  return players.find((p) => p.Name === canonicalName) ?? null;
+}
+
+/**
+ * Convert a raw PBP totals row into a per-game PlayerSeasonSlice for the
+ * blend layer. Returns undefined when the player has zero games (so they
+ * don't contribute to the blend).
+ */
+function toSlice(player: PbpPlayer | null): PlayerSeasonSlice | undefined {
+  if (!player || player.GamesPlayed <= 0) return undefined;
+  const gp = player.GamesPlayed;
+  return {
+    gamesPlayed: gp,
+    stats: {
+      points: player.Points / gp,
+      rebounds: player.Rebounds / gp,
+      assists: player.Assists / gp,
+      steals: player.Steals / gp,
+      blocks: player.Blocks / gp,
+      threes: player.FG3M / gp,
+      turnovers: player.Turnovers / gp,
+    },
+  };
 }
 
 /**
@@ -123,7 +256,6 @@ async function lookupPosition(playerName: string): Promise<string> {
     const bdlKey = process.env.BALLDONTLIE_API_KEY;
     if (!bdlKey) return 'SF';
 
-    // Split into first and last name for better search
     const parts = playerName.trim().split(/\s+/);
     let url: string;
     if (parts.length >= 2) {
@@ -150,46 +282,97 @@ async function lookupPosition(playerName: string): Promise<string> {
   return 'SF';
 }
 
+/** Round a float to one decimal place for display. */
+function round1(n: number): number {
+  return Math.round(n * 10) / 10;
+}
+
+/** Format a RawStatsBlock with one-decimal rounding for the response. */
+function roundStats(stats: RawStatsBlock): RawStatsBlock {
+  return {
+    points: round1(stats.points),
+    rebounds: round1(stats.rebounds),
+    assists: round1(stats.assists),
+    steals: round1(stats.steals),
+    blocks: round1(stats.blocks),
+    threes: round1(stats.threes),
+    turnovers: round1(stats.turnovers),
+  };
+}
+
 export async function GET(request: NextRequest) {
   const name = request.nextUrl.searchParams.get('name');
   if (!name) {
-    return NextResponse.json({ error: 'name query parameter is required' }, { status: 400 });
+    return NextResponse.json(
+      { error: 'name query parameter is required' },
+      { status: 400 },
+    );
   }
 
   try {
-    // Step 1: Get all player stats (cached — single API call for all players)
-    const allPlayers = await getPbpData();
+    // Step 1: Get all three datasets (cached after first call)
+    const cache = await getPbpData();
 
-    // Step 2: Find the player
-    const player = findPlayer(allPlayers, name);
-    if (!player) {
-      return NextResponse.json({ error: `Player not found: ${name}` }, { status: 404 });
+    // Step 2: Find the player in regular season — must succeed
+    const regularPlayer = findPlayer(cache.regular!, name);
+    if (!regularPlayer) {
+      return NextResponse.json(
+        { error: `Player not found: ${name}` },
+        { status: 404 },
+      );
+    }
+    if (regularPlayer.GamesPlayed <= 0) {
+      return NextResponse.json(
+        { error: `No regular season games for ${regularPlayer.Name}` },
+        { status: 404 },
+      );
     }
 
-    if (player.GamesPlayed <= 0) {
-      return NextResponse.json({ error: `No games played for ${player.Name}` }, { status: 404 });
-    }
+    // Step 3: Look up the same player in playoffs + finals datasets
+    // by exact canonical name (NBA Stats uses consistent naming).
+    const canonicalName = regularPlayer.Name;
+    const playoffsPlayer = findExactByCanonicalName(cache.playoffs, canonicalName);
+    const finalsPlayer = findExactByCanonicalName(cache.finals, canonicalName);
 
-    // Step 3: Compute per-game averages from season totals
-    const gp = player.GamesPlayed;
-    const stats = {
-      points: Math.round((player.Points / gp) * 10) / 10,
-      rebounds: Math.round((player.Rebounds / gp) * 10) / 10,
-      assists: Math.round((player.Assists / gp) * 10) / 10,
-      steals: Math.round((player.Steals / gp) * 10) / 10,
-      blocks: Math.round((player.Blocks / gp) * 10) / 10,
-      threes: Math.round((player.FG3M / gp) * 10) / 10,
-      turnovers: Math.round((player.Turnovers / gp) * 10) / 10,
-    };
+    // Step 4: Convert to per-game slices for the blender
+    const regularSlice = toSlice(regularPlayer)!; // safe — verified GP > 0 above
+    const playoffsSlice = toSlice(playoffsPlayer);
+    const finalsSlice = toSlice(finalsPlayer);
 
-    // Step 4: Look up position (best-effort from balldontlie free tier)
-    const position = await lookupPosition(player.Name);
+    // Step 5: Compute blend weights from games played
+    const playoffsGames = playoffsSlice?.gamesPlayed ?? 0;
+    const finalsGames = finalsSlice?.gamesPlayed ?? 0;
+    const weights = computeBlendWeights(playoffsGames, finalsGames);
+
+    // Step 6: Run the blend
+    const blendedRaw = blendStats(
+      { regular: regularSlice, playoffs: playoffsSlice, finals: finalsSlice },
+      weights,
+    );
+    const stats = roundStats(blendedRaw);
+
+    // Step 7: Determine the per-player season type label
+    const seasonType = determineSeasonType({
+      regular: regularSlice,
+      playoffs: playoffsSlice,
+      finals: finalsSlice,
+    });
+
+    // Step 8: Look up position (best-effort from balldontlie free tier)
+    const position = await lookupPosition(canonicalName);
 
     return NextResponse.json({
-      playerName: player.Name,
+      playerName: canonicalName,
       position,
-      team: player.TeamAbbreviation,
+      team: regularPlayer.TeamAbbreviation,
       stats,
+      seasonType,
+      blendWeights: weights,
+      gamesPlayed: {
+        regular: regularPlayer.GamesPlayed,
+        playoffs: playoffsGames,
+        finals: finalsGames,
+      },
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error';

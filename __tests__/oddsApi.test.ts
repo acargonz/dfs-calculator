@@ -1,8 +1,11 @@
 import {
+  buildEventsUrl,
+  crossReferenceOdds,
+  formatOddsApiTime,
+  normalizeName,
+  ODDS_API_BASE,
   transformGames,
   transformProps,
-  normalizeName,
-  crossReferenceOdds,
   type OddsApiEvent,
   type OddsApiEventOdds,
   type PlayerProp,
@@ -381,5 +384,101 @@ describe('crossReferenceOdds', () => {
     expect(results[0].matched).toBe(false);
     expect(results[0].prop.overOdds).toBe(-110);
     expect(results[0].prop.underOdds).toBe(-110);
+  });
+});
+
+// ============================================================================
+// URL builder helpers — these guarantee the games endpoint asks for a wide
+// enough date window that we get the full slate, not the narrow default 5.
+// ============================================================================
+
+describe('formatOddsApiTime', () => {
+  it('strips milliseconds from an ISO string', () => {
+    // toISOString() yields YYYY-MM-DDTHH:MM:SS.sssZ. The Odds API requires
+    // the truncated form YYYY-MM-DDTHH:MM:SSZ.
+    const date = new Date('2026-04-07T18:30:45.123Z');
+    expect(formatOddsApiTime(date)).toBe('2026-04-07T18:30:45Z');
+  });
+
+  it('handles a date with .000 milliseconds', () => {
+    const date = new Date('2026-04-07T18:30:45.000Z');
+    expect(formatOddsApiTime(date)).toBe('2026-04-07T18:30:45Z');
+  });
+
+  it('produces a string the API regex accepts', () => {
+    const formatted = formatOddsApiTime(new Date('2026-04-07T18:30:45.999Z'));
+    expect(formatted).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+  });
+});
+
+describe('buildEventsUrl', () => {
+  const FIXED_NOW = new Date('2026-04-06T20:00:00.000Z');
+
+  it('hits the basketball_nba events endpoint', () => {
+    const url = buildEventsUrl('test-key', FIXED_NOW);
+    expect(url.startsWith(`${ODDS_API_BASE}/events?`)).toBe(true);
+  });
+
+  it('includes the api key', () => {
+    const url = buildEventsUrl('test-key', FIXED_NOW);
+    expect(url).toContain('apiKey=test-key');
+  });
+
+  it('includes commenceTimeFrom 6 hours before now', () => {
+    // 2026-04-06T20:00:00Z minus 6h = 2026-04-06T14:00:00Z
+    const url = buildEventsUrl('k', FIXED_NOW);
+    const decoded = decodeURIComponent(url);
+    expect(decoded).toContain('commenceTimeFrom=2026-04-06T14:00:00Z');
+  });
+
+  it('includes commenceTimeTo 60 hours after now', () => {
+    // 2026-04-06T20:00:00Z plus 60h = 2026-04-09T08:00:00Z (covers today,
+    // tomorrow, and a buffer for late-night Pacific tip-offs).
+    const url = buildEventsUrl('k', FIXED_NOW);
+    const decoded = decodeURIComponent(url);
+    expect(decoded).toContain('commenceTimeTo=2026-04-09T08:00:00Z');
+  });
+
+  it('includes dateFormat=iso', () => {
+    const url = buildEventsUrl('k', FIXED_NOW);
+    expect(url).toContain('dateFormat=iso');
+  });
+
+  it('produces millisecond-free timestamps in the URL', () => {
+    // The Odds API rejects timestamps with milliseconds (.123Z). Make sure
+    // we never accidentally encode them.
+    const url = buildEventsUrl('k', new Date('2026-04-06T20:00:00.456Z'));
+    expect(url).not.toMatch(/\.\d{3}Z/);
+    expect(url).not.toMatch(/%2E\d{3}Z/i); // url-encoded form
+  });
+
+  it('window is wide enough to cover at least 36 hours of upcoming games', () => {
+    // The user reported 5/10 games — the gap was the missing date range.
+    // 60 hours forward should comfortably catch tomorrow's full slate even
+    // when the user opens the app at 11pm local.
+    const url = buildEventsUrl('k', FIXED_NOW);
+    const fromMatch = decodeURIComponent(url).match(/commenceTimeFrom=([^&]+)/);
+    const toMatch = decodeURIComponent(url).match(/commenceTimeTo=([^&]+)/);
+    expect(fromMatch).not.toBeNull();
+    expect(toMatch).not.toBeNull();
+    const from = new Date(fromMatch![1]).getTime();
+    const to = new Date(toMatch![1]).getTime();
+    const hours = (to - from) / (60 * 60 * 1000);
+    expect(hours).toBeGreaterThanOrEqual(36);
+  });
+
+  it('defaults the now arg to the current Date when omitted', () => {
+    const before = Date.now();
+    const url = buildEventsUrl('k');
+    const after = Date.now();
+
+    const fromMatch = decodeURIComponent(url).match(/commenceTimeFrom=([^&]+)/);
+    expect(fromMatch).not.toBeNull();
+    const fromMs = new Date(fromMatch![1]).getTime();
+
+    // The "from" should be 6h before some moment in [before, after]
+    const sixHoursMs = 6 * 60 * 60 * 1000;
+    expect(fromMs).toBeGreaterThanOrEqual(before - sixHoursMs - 1000);
+    expect(fromMs).toBeLessThanOrEqual(after - sixHoursMs + 1000);
   });
 });

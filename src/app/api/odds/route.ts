@@ -1,13 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
+  buildEventsUrl,
+  ODDS_API_BASE,
   transformGames,
   transformProps,
   SUPPORTED_MARKETS,
   type OddsApiEvent,
   type OddsApiEventOdds,
 } from '@/lib/oddsApi';
-
-const ODDS_API_BASE = 'https://api.the-odds-api.com/v4/sports/basketball_nba';
 
 function getApiKey(): string {
   const key = process.env.ODDS_API_KEY;
@@ -39,7 +39,9 @@ export async function GET(request: NextRequest) {
 
 async function handleGames(): Promise<NextResponse> {
   const apiKey = getApiKey();
-  const url = `${ODDS_API_BASE}/events?apiKey=${apiKey}`;
+  // Explicit date range so we get the full slate (today + tomorrow), not
+  // just the narrow default window. See buildEventsUrl docstring for why.
+  const url = buildEventsUrl(apiKey);
 
   const res = await fetch(url);
   if (!res.ok) {

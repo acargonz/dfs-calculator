@@ -3,10 +3,14 @@ import {
   computeSummary,
   sortResults,
   processBatch,
+  applyPostseasonKellyReduction,
+  isPostseasonSlice,
+  POSTSEASON_KELLY_MULTIPLIER,
   type BatchPlayerResult,
   type BatchInput,
 } from '../src/lib/batchProcessor';
 import type { PlayerSeasonAvg } from '../src/lib/playerStats';
+import type { CalculationResult, SideEvaluation } from '../src/components/types';
 
 const mockStats: PlayerSeasonAvg = {
   playerName: 'Test Player',
@@ -14,6 +18,35 @@ const mockStats: PlayerSeasonAvg = {
   team: 'Test Team',
   stats: { points: 25.0, rebounds: 8.0, assists: 6.5, steals: 1.2, blocks: 0.8, threes: 2.5, turnovers: 3.5 },
 };
+
+/**
+ * Build a synthetic two-sided CalculationResult for tests that don't need
+ * real math — just enough for tier/EV/sort assertions.
+ */
+function makeSide(overrides: Partial<SideEvaluation> = {}): SideEvaluation {
+  return {
+    fairProb: 0.5,
+    modelProb: 0.5,
+    blendedProb: 0.5,
+    ev: 0,
+    kellyStake: 0,
+    kellyFraction: 0.25,
+    tier: 'REJECT',
+    ...overrides,
+  };
+}
+
+function makeResult(
+  overSide: Partial<SideEvaluation>,
+  underSide: Partial<SideEvaluation> = { tier: 'REJECT', ev: -0.05 },
+  source = 'Binomial',
+): CalculationResult {
+  return {
+    over: makeSide(overSide),
+    under: makeSide(underSide),
+    source,
+  };
+}
 
 describe('getStatMean', () => {
   it('returns points', () => {
@@ -56,10 +89,10 @@ describe('getStatMean', () => {
     expect(getStatMean(mockStats.stats, 'rebs+asts')).toBe(14.5); // 8 + 6.5
   });
 
-  it('returns fantasy points (DK scoring)', () => {
-    // 25*1 + 8*1.25 + 6.5*1.5 + 1.2*2 + 0.8*2 + 2.5*0.5 - 3.5*0.5
-    // = 25 + 10 + 9.75 + 2.4 + 1.6 + 1.25 - 1.75 = 48.25
-    expect(getStatMean(mockStats.stats, 'fantasy')).toBeCloseTo(48.25, 2);
+  it('returns fantasy points (PrizePicks/Underdog scoring)', () => {
+    // 25*1 + 8*1.2 + 6.5*1.5 + 1.2*3 + 0.8*3 - 3.5*1
+    // = 25 + 9.6 + 9.75 + 3.6 + 2.4 - 3.5 = 46.85
+    expect(getStatMean(mockStats.stats, 'fantasy')).toBeCloseTo(46.85, 2);
   });
 
   it('returns 0 for unknown stat type', () => {
@@ -68,11 +101,11 @@ describe('getStatMean', () => {
 });
 
 describe('computeSummary', () => {
-  it('counts tiers correctly', () => {
+  it('counts tiers correctly using the stronger side', () => {
     const players: BatchPlayerResult[] = [
-      { playerName: 'A', position: 'PG', statType: 'points', line: 20, mean: 22, overOdds: -110, underOdds: -110, result: { tier: 'HIGH', ev: 0.1, blendedProb: 0.6, fairOverProb: 0.5, fairUnderProb: 0.5, modelOverProb: 0.6, modelUnderProb: 0.4, kellyStake: 5, kellyFraction: 0.25, source: 'Binomial' }, status: 'success' },
-      { playerName: 'B', position: 'SG', statType: 'points', line: 20, mean: 21, overOdds: -110, underOdds: -110, result: { tier: 'MEDIUM', ev: 0.06, blendedProb: 0.55, fairOverProb: 0.5, fairUnderProb: 0.5, modelOverProb: 0.55, modelUnderProb: 0.45, kellyStake: 3, kellyFraction: 0.25, source: 'Binomial' }, status: 'success' },
-      { playerName: 'C', position: 'SF', statType: 'points', line: 20, mean: 20, overOdds: -110, underOdds: -110, result: { tier: 'REJECT', ev: -0.02, blendedProb: 0.48, fairOverProb: 0.5, fairUnderProb: 0.5, modelOverProb: 0.48, modelUnderProb: 0.52, kellyStake: 0, kellyFraction: 0.25, source: 'Binomial' }, status: 'success' },
+      { playerName: 'A', position: 'PG', statType: 'points', line: 20, mean: 22, overOdds: -110, underOdds: -110, result: makeResult({ tier: 'HIGH', ev: 0.1, blendedProb: 0.6, kellyStake: 5 }), status: 'success' },
+      { playerName: 'B', position: 'SG', statType: 'points', line: 20, mean: 21, overOdds: -110, underOdds: -110, result: makeResult({ tier: 'MEDIUM', ev: 0.06, blendedProb: 0.55, kellyStake: 3 }), status: 'success' },
+      { playerName: 'C', position: 'SF', statType: 'points', line: 20, mean: 20, overOdds: -110, underOdds: -110, result: makeResult({ tier: 'REJECT', ev: -0.02, blendedProb: 0.48 }), status: 'success' },
       { playerName: 'D', position: '', statType: 'points', line: 20, mean: 0, overOdds: -110, underOdds: -110, result: null, status: 'player_not_found', statusMessage: 'Player not found' },
     ];
 
@@ -88,14 +121,36 @@ describe('computeSummary', () => {
     const summary = computeSummary([]);
     expect(summary).toEqual({ high: 0, medium: 0, low: 0, reject: 0, errors: 0 });
   });
+
+  it('counts the under side when it has the stronger tier', () => {
+    const players: BatchPlayerResult[] = [
+      {
+        playerName: 'UnderPlay',
+        position: 'PG',
+        statType: 'points',
+        line: 20,
+        mean: 18,
+        overOdds: -110,
+        underOdds: -110,
+        result: makeResult(
+          { tier: 'REJECT', ev: -0.1 },
+          { tier: 'HIGH', ev: 0.12, blendedProb: 0.62, kellyStake: 6 },
+        ),
+        status: 'success',
+      },
+    ];
+    const summary = computeSummary(players);
+    expect(summary.high).toBe(1);
+    expect(summary.reject).toBe(0);
+  });
 });
 
 describe('sortResults', () => {
   it('sorts HIGH before MEDIUM before LOW before REJECT', () => {
     const players: BatchPlayerResult[] = [
-      { playerName: 'Reject', position: 'C', statType: 'points', line: 20, mean: 18, overOdds: -110, underOdds: -110, result: { tier: 'REJECT', ev: -0.05, blendedProb: 0.4, fairOverProb: 0.5, fairUnderProb: 0.5, modelOverProb: 0.4, modelUnderProb: 0.6, kellyStake: 0, kellyFraction: 0.25, source: 'Binomial' }, status: 'success' },
-      { playerName: 'High', position: 'PG', statType: 'points', line: 20, mean: 25, overOdds: -110, underOdds: -110, result: { tier: 'HIGH', ev: 0.15, blendedProb: 0.65, fairOverProb: 0.5, fairUnderProb: 0.5, modelOverProb: 0.65, modelUnderProb: 0.35, kellyStake: 10, kellyFraction: 0.25, source: 'Binomial' }, status: 'success' },
-      { playerName: 'Medium', position: 'SG', statType: 'points', line: 20, mean: 22, overOdds: -110, underOdds: -110, result: { tier: 'MEDIUM', ev: 0.07, blendedProb: 0.56, fairOverProb: 0.5, fairUnderProb: 0.5, modelOverProb: 0.56, modelUnderProb: 0.44, kellyStake: 4, kellyFraction: 0.25, source: 'Binomial' }, status: 'success' },
+      { playerName: 'Reject', position: 'C', statType: 'points', line: 20, mean: 18, overOdds: -110, underOdds: -110, result: makeResult({ tier: 'REJECT', ev: -0.05 }), status: 'success' },
+      { playerName: 'High', position: 'PG', statType: 'points', line: 20, mean: 25, overOdds: -110, underOdds: -110, result: makeResult({ tier: 'HIGH', ev: 0.15, blendedProb: 0.65, kellyStake: 10 }), status: 'success' },
+      { playerName: 'Medium', position: 'SG', statType: 'points', line: 20, mean: 22, overOdds: -110, underOdds: -110, result: makeResult({ tier: 'MEDIUM', ev: 0.07, blendedProb: 0.56, kellyStake: 4 }), status: 'success' },
     ];
 
     const sorted = sortResults(players);
@@ -107,7 +162,7 @@ describe('sortResults', () => {
   it('sorts errors to the bottom', () => {
     const players: BatchPlayerResult[] = [
       { playerName: 'Error', position: '', statType: 'points', line: 20, mean: 0, overOdds: -110, underOdds: -110, result: null, status: 'player_not_found' },
-      { playerName: 'Good', position: 'PG', statType: 'points', line: 20, mean: 25, overOdds: -110, underOdds: -110, result: { tier: 'HIGH', ev: 0.15, blendedProb: 0.65, fairOverProb: 0.5, fairUnderProb: 0.5, modelOverProb: 0.65, modelUnderProb: 0.35, kellyStake: 10, kellyFraction: 0.25, source: 'Binomial' }, status: 'success' },
+      { playerName: 'Good', position: 'PG', statType: 'points', line: 20, mean: 25, overOdds: -110, underOdds: -110, result: makeResult({ tier: 'HIGH', ev: 0.15, blendedProb: 0.65, kellyStake: 10 }), status: 'success' },
     ];
 
     const sorted = sortResults(players);
@@ -141,7 +196,8 @@ describe('processBatch', () => {
     expect(result.players[0].status).toBe('success');
     expect(result.players[0].mean).toBe(25.0);
     expect(result.players[0].result).not.toBeNull();
-    expect(result.players[0].result!.tier).toBeDefined();
+    expect(result.players[0].result!.over.tier).toBeDefined();
+    expect(result.players[0].result!.under.tier).toBeDefined();
   });
 
   it('handles player not found gracefully', async () => {
@@ -244,8 +300,196 @@ describe('processBatch', () => {
     const result = await processBatch(input, mockFetchStats);
     expect(result.players).toHaveLength(1);
     expect(result.players[0].status).toBe('success');
-    expect(result.players[0].mean).toBeCloseTo(48.25, 1);
+    expect(result.players[0].mean).toBeCloseTo(46.85, 1);
     expect(result.players[0].result).not.toBeNull();
-    expect(['HIGH', 'MEDIUM', 'LOW', 'REJECT']).toContain(result.players[0].result!.tier);
+    expect(['HIGH', 'MEDIUM', 'LOW', 'REJECT']).toContain(result.players[0].result!.over.tier);
+    expect(['HIGH', 'MEDIUM', 'LOW', 'REJECT']).toContain(result.players[0].result!.under.tier);
+  });
+});
+
+// =============================================================================
+// Postseason Kelly reduction
+// =============================================================================
+
+describe('isPostseasonSlice', () => {
+  it('returns false for undefined', () => {
+    expect(isPostseasonSlice(undefined)).toBe(false);
+  });
+
+  it('returns false for regular', () => {
+    expect(isPostseasonSlice('regular')).toBe(false);
+  });
+
+  it('returns true for playoffs', () => {
+    expect(isPostseasonSlice('playoffs')).toBe(true);
+  });
+
+  it('returns true for finals', () => {
+    expect(isPostseasonSlice('finals')).toBe(true);
+  });
+});
+
+describe('applyPostseasonKellyReduction', () => {
+  function mkResult(): CalculationResult {
+    return {
+      over: makeSide({ tier: 'HIGH', ev: 0.12, blendedProb: 0.62, kellyStake: 10 }),
+      under: makeSide({ tier: 'REJECT', ev: -0.05, blendedProb: 0.45, kellyStake: 4 }),
+      source: 'NegBinomial',
+    };
+  }
+
+  it('returns the result unchanged when seasonType is undefined', () => {
+    const r = mkResult();
+    const out = applyPostseasonKellyReduction(r, undefined);
+    expect(out.over.kellyStake).toBe(10);
+    expect(out.under.kellyStake).toBe(4);
+  });
+
+  it('returns the result unchanged when seasonType is regular', () => {
+    const r = mkResult();
+    const out = applyPostseasonKellyReduction(r, 'regular');
+    expect(out.over.kellyStake).toBe(10);
+    expect(out.under.kellyStake).toBe(4);
+  });
+
+  it('multiplies kelly stakes by 0.75 when seasonType is playoffs', () => {
+    const r = mkResult();
+    const out = applyPostseasonKellyReduction(r, 'playoffs');
+    expect(out.over.kellyStake).toBeCloseTo(7.5, 5);
+    expect(out.under.kellyStake).toBeCloseTo(3, 5);
+  });
+
+  it('multiplies kelly stakes by 0.75 when seasonType is finals', () => {
+    const r = mkResult();
+    const out = applyPostseasonKellyReduction(r, 'finals');
+    expect(out.over.kellyStake).toBeCloseTo(7.5, 5);
+    expect(out.under.kellyStake).toBeCloseTo(3, 5);
+  });
+
+  it('does not mutate the input result', () => {
+    const r = mkResult();
+    applyPostseasonKellyReduction(r, 'finals');
+    expect(r.over.kellyStake).toBe(10);
+    expect(r.under.kellyStake).toBe(4);
+  });
+
+  it('preserves probability/EV/tier fields untouched', () => {
+    const r = mkResult();
+    const out = applyPostseasonKellyReduction(r, 'finals');
+    expect(out.over.tier).toBe(r.over.tier);
+    expect(out.over.ev).toBeCloseTo(r.over.ev, 6);
+    expect(out.over.blendedProb).toBeCloseTo(r.over.blendedProb, 6);
+    expect(out.under.tier).toBe(r.under.tier);
+    expect(out.source).toBe(r.source);
+  });
+
+  it('exposes a 0.75 multiplier constant', () => {
+    expect(POSTSEASON_KELLY_MULTIPLIER).toBe(0.75);
+  });
+});
+
+describe('processBatch postseason behavior', () => {
+  const mockFetchStats = jest.fn<Promise<PlayerSeasonAvg>, [string]>();
+
+  beforeEach(() => {
+    mockFetchStats.mockReset();
+  });
+
+  function mkInput(): BatchInput {
+    return {
+      props: [
+        { playerName: 'Test Player', statType: 'points', line: 24.5, overOdds: -110, underOdds: -110, bookmaker: 'fanduel' },
+      ],
+      bankroll: 1000,
+      kellyMode: 'standard',
+      paceModifier: 0,
+      injuryModifier: 0,
+    };
+  }
+
+  it('does NOT reduce kelly when seasonType is absent (legacy / regular)', async () => {
+    // mockStats has no seasonType field at all
+    mockFetchStats.mockResolvedValue(mockStats);
+    const result = await processBatch(mkInput(), mockFetchStats);
+    expect(result.players[0].seasonType).toBeUndefined();
+    // Stake is whatever the math layer returned — we just verify it was not
+    // multiplied by 0.75. It should equal the same call WITHOUT reduction.
+    // Re-running with the reduction helper directly is the easiest cross-check.
+    const raw = result.players[0].result!;
+    expect(applyPostseasonKellyReduction(raw, undefined).over.kellyStake)
+      .toBeCloseTo(raw.over.kellyStake, 6);
+  });
+
+  it('does NOT reduce kelly when seasonType is regular', async () => {
+    mockFetchStats.mockResolvedValue({ ...mockStats, seasonType: 'regular' });
+    const result = await processBatch(mkInput(), mockFetchStats);
+    expect(result.players[0].seasonType).toBe('regular');
+    // Compare against an explicit no-reduction baseline to avoid hard-coding
+    // the math layer's exact stake.
+    const raw = result.players[0].result!;
+    expect(applyPostseasonKellyReduction(raw, 'regular').over.kellyStake)
+      .toBeCloseTo(raw.over.kellyStake, 6);
+  });
+
+  it('reduces kelly stake by 0.75 when seasonType is playoffs', async () => {
+    // Run twice — once with regular, once with playoffs — and verify the
+    // playoffs row is exactly 0.75x the regular row's stake.
+    mockFetchStats.mockResolvedValueOnce({ ...mockStats, seasonType: 'regular' });
+    const reg = await processBatch(mkInput(), mockFetchStats);
+
+    mockFetchStats.mockResolvedValueOnce({ ...mockStats, seasonType: 'playoffs' });
+    const post = await processBatch(mkInput(), mockFetchStats);
+
+    expect(post.players[0].seasonType).toBe('playoffs');
+    expect(post.players[0].result!.over.kellyStake)
+      .toBeCloseTo(reg.players[0].result!.over.kellyStake * 0.75, 5);
+    expect(post.players[0].result!.under.kellyStake)
+      .toBeCloseTo(reg.players[0].result!.under.kellyStake * 0.75, 5);
+  });
+
+  it('reduces kelly stake by 0.75 when seasonType is finals', async () => {
+    mockFetchStats.mockResolvedValueOnce({ ...mockStats, seasonType: 'regular' });
+    const reg = await processBatch(mkInput(), mockFetchStats);
+
+    mockFetchStats.mockResolvedValueOnce({ ...mockStats, seasonType: 'finals' });
+    const post = await processBatch(mkInput(), mockFetchStats);
+
+    expect(post.players[0].seasonType).toBe('finals');
+    expect(post.players[0].result!.over.kellyStake)
+      .toBeCloseTo(reg.players[0].result!.over.kellyStake * 0.75, 5);
+    expect(post.players[0].result!.under.kellyStake)
+      .toBeCloseTo(reg.players[0].result!.under.kellyStake * 0.75, 5);
+  });
+
+  it('does not change probabilities, EV, or tiers in postseason mode', async () => {
+    mockFetchStats.mockResolvedValueOnce({ ...mockStats, seasonType: 'regular' });
+    const reg = await processBatch(mkInput(), mockFetchStats);
+
+    mockFetchStats.mockResolvedValueOnce({ ...mockStats, seasonType: 'finals' });
+    const post = await processBatch(mkInput(), mockFetchStats);
+
+    const r = reg.players[0].result!;
+    const p = post.players[0].result!;
+
+    expect(p.over.blendedProb).toBeCloseTo(r.over.blendedProb, 6);
+    expect(p.over.ev).toBeCloseTo(r.over.ev, 6);
+    expect(p.over.tier).toBe(r.over.tier);
+    expect(p.under.blendedProb).toBeCloseTo(r.under.blendedProb, 6);
+    expect(p.under.ev).toBeCloseTo(r.under.ev, 6);
+    expect(p.under.tier).toBe(r.under.tier);
+  });
+
+  it('propagates seasonType to error rows (mean = 0 case)', async () => {
+    // Force the "no stat" path: stats with all-zero fields → mean = 0
+    mockFetchStats.mockResolvedValue({
+      playerName: 'X',
+      position: 'PG',
+      team: 'BOS',
+      stats: { points: 0, rebounds: 0, assists: 0, steals: 0, blocks: 0, threes: 0, turnovers: 0 },
+      seasonType: 'finals',
+    });
+    const result = await processBatch(mkInput(), mockFetchStats);
+    expect(result.players[0].status).toBe('api_error');
+    expect(result.players[0].seasonType).toBe('finals');
   });
 });

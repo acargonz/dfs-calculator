@@ -1,0 +1,13 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "crons": [
+    {
+      "path": "/api/snapshot-closing-lines",
+      "schedule": "0 23 * * *"
+    },
+    {
+      "path": "/api/resolve-picks",
+      "schedule": "0 12 * * *"
+    }
+  ]
+}

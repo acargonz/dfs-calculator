@@ -1,4 +1,9 @@
 import type { Position } from '../components/types';
+import type { SeasonType, BlendWeights } from './playerStatsBlend';
+
+// Re-export for downstream consumers (batchProcessor, aiAnalysis) so they
+// don't have to know about the playerStatsBlend module directly.
+export type { SeasonType, BlendWeights } from './playerStatsBlend';
 
 export interface PlayerSeasonAvg {
   playerName: string;
@@ -12,6 +17,36 @@ export interface PlayerSeasonAvg {
     blocks: number;
     threes: number;
     turnovers: number;
+  };
+
+  /**
+   * Which season(s) the stats above represent. Optional for backward
+   * compatibility with existing test fixtures and any pre-postseason
+   * cached responses. When unset, downstream code should treat the
+   * player as 'regular' season.
+   *
+   * - 'regular':  pre-playoffs / off-season / player on a non-playoff team
+   * - 'playoffs': blend of regular season + playoffs (rounds 1-3, NOT Finals)
+   * - 'finals':   blend that also includes NBA Finals games
+   */
+  seasonType?: SeasonType;
+
+  /**
+   * The actual blend weights used to produce the stats block above.
+   * Sums to ~1.0. Useful for UI badges ("Blended: 35% playoffs / 25% finals")
+   * and for the AI prompt's audit trail.
+   */
+  blendWeights?: BlendWeights;
+
+  /**
+   * Game counts that fed each slice. Lets the AI / UI distinguish a
+   * Round-1 player (small playoff sample) from a Finals participant
+   * (deeper postseason sample).
+   */
+  gamesPlayed?: {
+    regular: number;
+    playoffs: number; // playoffs EXCLUDING Finals
+    finals: number;
   };
 }
 
@@ -31,10 +66,6 @@ export function mapPosition(bdlPosition: string): Position {
 
 // In-memory cache to avoid re-fetching the same player
 const cache = new Map<string, PlayerSeasonAvg>();
-
-export function clearCache(): void {
-  cache.clear();
-}
 
 export async function fetchPlayerStats(name: string): Promise<PlayerSeasonAvg> {
   const cacheKey = name.toLowerCase().trim();

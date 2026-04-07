@@ -1,5 +1,47 @@
 // Types for The Odds API data
 
+/** Base URL for the basketball_nba sport namespace on The Odds API. */
+export const ODDS_API_BASE = 'https://api.the-odds-api.com/v4/sports/basketball_nba';
+
+/**
+ * Format a Date for The Odds API's `commenceTimeFrom` / `commenceTimeTo`
+ * query params. The API requires ISO 8601 in UTC with NO milliseconds:
+ *   YYYY-MM-DDTHH:MM:SSZ
+ *
+ * `Date.toISOString()` produces `YYYY-MM-DDTHH:MM:SS.sssZ`, so we strip the
+ * `.sss` segment.
+ */
+export function formatOddsApiTime(date: Date): string {
+  return date.toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+/**
+ * Build the `/events` URL for the games endpoint.
+ *
+ * Without explicit date range params, The Odds API returns only a narrow
+ * window of upcoming events (we observed ~5 events back even when 10+ were
+ * scheduled the next day). Passing `commenceTimeFrom` / `commenceTimeTo`
+ * forces the full slate to come back. The window is:
+ *   - from: 6 hours before `now` (so in-progress games are included)
+ *   - to:   60 hours after `now` (so today + tomorrow + a buffer fits)
+ *
+ * `dateFormat=iso` is included so the response uses ISO strings consistently.
+ *
+ * Exported so it can be unit tested independently of `fetch`.
+ */
+export function buildEventsUrl(apiKey: string, now: Date = new Date()): string {
+  const HOUR_MS = 60 * 60 * 1000;
+  const from = new Date(now.getTime() - 6 * HOUR_MS);
+  const to = new Date(now.getTime() + 60 * HOUR_MS);
+  const params = new URLSearchParams({
+    apiKey,
+    commenceTimeFrom: formatOddsApiTime(from),
+    commenceTimeTo: formatOddsApiTime(to),
+    dateFormat: 'iso',
+  });
+  return `${ODDS_API_BASE}/events?${params.toString()}`;
+}
+
 export interface NBAGame {
   id: string;
   homeTeam: string;
