@@ -143,11 +143,16 @@ export const AnalyzeRequestBody = z
     // unreasonably huge. Full shape validation would duplicate BatchResult
     // type and we produce it ourselves server-side, so the risk is
     // resource-exhaustion (big arrays) not malicious content.
+    //
+    // Each BatchPlayerResult is one (player, statType) combo, not one
+    // player — a 12-game NBA slate with ~24 players × multiple stat types
+    // can easily exceed 200 entries. Cap is the 512KB body shield above,
+    // not this number; this just rejects pathological array bombs.
     calculatorResults: z
       .object({
         players: z
           .array(z.object({}).passthrough())
-          .max(200, 'too many players in a single analysis batch'),
+          .max(1000, 'too many players in a single analysis batch'),
         summary: z.object({}).passthrough().optional(),
       })
       .passthrough(),

@@ -43,7 +43,7 @@ import { safeErrorMessage } from '@/lib/redact';
  * Defense-in-depth stack (applied in order):
  *   1. Origin/Referer allowlist (lib/originCheck) — CSRF shield against
  *      browser-based hot-linking from evil.com.
- *   2. Content-Length cap (~100KB) — prevents a 20MB JSON bomb from
+ *   2. Content-Length cap (512KB) — prevents a 20MB JSON bomb from
  *      reaching the Zod parser at all.
  *   3. Zod.safeParse() on the body with strict() — reject any field that's
  *      missing, wrong type, or unknown. OWASP REST Security Cheat Sheet
@@ -94,10 +94,10 @@ interface AnalyzeRouteBodyShape {
   saveToDatabase?: boolean;
 }
 
-// 100KB is comfortable for a 30-player slate with injuries + lineup context.
-// The actual largest legitimate body we've seen in testing is ~35KB. Doubling
-// it gives a buffer while still rejecting anything implausible.
-const MAX_BODY_BYTES = 100 * 1024;
+// 512KB cap — small enough to act as a DoS shield (OWASP API4 — Resource
+// Consumption), large enough to fit legitimate full-slate analyses. The AI
+// provider will reject anything genuinely absurd long before this cap.
+const MAX_BODY_BYTES = 512 * 1024;
 
 function getEnvKey(provider: AIProvider): string | undefined {
   if (provider === 'gemini') return process.env.GEMINI_API_KEY;

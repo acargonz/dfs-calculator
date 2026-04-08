@@ -225,8 +225,8 @@ describe('AnalyzeRequestBody', () => {
     expect(res.success).toBe(false);
   });
 
-  it('rejects > 200 players in a single batch', () => {
-    const tooMany = Array.from({ length: 201 }, () => ({}));
+  it('rejects > 1000 players in a single batch', () => {
+    const tooMany = Array.from({ length: 1001 }, () => ({}));
     const res = AnalyzeRequestBody.safeParse({
       ...minimalValidBody,
       calculatorResults: { players: tooMany },
