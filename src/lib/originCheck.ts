@@ -51,13 +51,29 @@ function getAllowlist(): string[] {
   const vercelUrl = process.env.VERCEL_URL?.trim();
   if (vercelUrl) list.push(`https://${vercelUrl}`);
 
-  // Dev convenience — only added when explicitly not in production.
-  if (process.env.NODE_ENV !== 'production') {
-    list.push('http://localhost:3000');
-    list.push('http://127.0.0.1:3000');
-  }
-
   return list;
+}
+
+/**
+ * Detects whether a URL string is a localhost / 127.0.0.1 / [::1] origin
+ * regardless of port. Used by the dev-mode bypass below so a developer
+ * running on a non-3000 port (Next.js auto-picks when 3000 is busy)
+ * doesn't get blocked. The check is intentionally lenient — it ONLY
+ * runs in dev mode, and dev mode is never exposed to the public internet.
+ */
+function isLocalhostOrigin(value: string): boolean {
+  if (!value) return false;
+  try {
+    const u = new URL(value);
+    return (
+      u.hostname === 'localhost' ||
+      u.hostname === '127.0.0.1' ||
+      u.hostname === '[::1]' ||
+      u.hostname === '::1'
+    );
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -68,16 +84,26 @@ function getAllowlist(): string[] {
  *
  * The comparison is strict "starts with" — subdomain scoping like
  * `preview-foo.vercel.app` must be added explicitly to ALLOWED_ORIGINS.
+ *
+ * Dev mode (`NODE_ENV !== 'production'`) bypasses the allowlist for
+ * localhost / 127.0.0.1 / [::1] regardless of port. This is safe because
+ * dev mode never serves external traffic, and hardcoding port 3000
+ * previously broke whenever Next.js auto-picked a different port.
  */
 export function isAllowedOrigin(request: NextRequest): boolean {
+  const origin = request.headers.get('origin') ?? '';
+  const referer = request.headers.get('referer') ?? '';
+
+  // Dev bypass: any localhost origin/referer passes regardless of port.
+  if (process.env.NODE_ENV !== 'production') {
+    if (isLocalhostOrigin(origin) || isLocalhostOrigin(referer)) return true;
+  }
+
   const allowlist = getAllowlist();
 
   // Empty allowlist = fail-closed. Protects against "oh we forgot to set
   // NEXT_PUBLIC_SITE_URL in production" misconfiguration.
   if (allowlist.length === 0) return false;
-
-  const origin = request.headers.get('origin') ?? '';
-  const referer = request.headers.get('referer') ?? '';
 
   const matchesOrigin =
     origin.length > 0 && allowlist.some((o) => origin === o || origin.startsWith(`${o}/`));

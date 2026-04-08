@@ -6,6 +6,7 @@ import {
   didPlayerPlay,
   findBoxScoreIndex,
   normalizePlayerName,
+  parseMinutesValue,
   resolvePick,
   type RawBoxScore,
 } from '../src/lib/pickResolver';
@@ -99,10 +100,18 @@ describe('canonicalizeStatType', () => {
     expect(canonicalizeStatType('to')).toBe('turnovers');
   });
 
+  test('maps minutes aliases', () => {
+    expect(canonicalizeStatType('minutes')).toBe('minutes');
+    expect(canonicalizeStatType('Minutes')).toBe('minutes');
+    expect(canonicalizeStatType('min')).toBe('minutes');
+    expect(canonicalizeStatType('mins')).toBe('minutes');
+    expect(canonicalizeStatType('player_minutes')).toBe('minutes');
+  });
+
   test('returns null for unrecognized stats', () => {
     expect(canonicalizeStatType('dunks')).toBeNull();
     expect(canonicalizeStatType('')).toBeNull();
-    expect(canonicalizeStatType('minutes')).toBeNull();
+    expect(canonicalizeStatType('plus_minus')).toBeNull();
   });
 });
 
@@ -144,6 +153,44 @@ describe('computeActualValue', () => {
     expect(computeActualValue(box, 'points')).toBe(0);
     expect(computeActualValue(box, 'pra')).toBe(0);
     expect(computeActualValue(box, 'fantasy')).toBe(0);
+  });
+
+  test('computes minutes from the min field', () => {
+    expect(computeActualValue(makeBox({ min: '37:42' }), 'minutes')).toBe(37);
+    expect(computeActualValue(makeBox({ min: '37' }), 'minutes')).toBe(37);
+    expect(computeActualValue(makeBox({ min: ':00' }), 'minutes')).toBe(0);
+  });
+});
+
+// ============================================================================
+// parseMinutesValue
+// ============================================================================
+
+describe('parseMinutesValue', () => {
+  test('parses bare integer minutes (ESPN format)', () => {
+    expect(parseMinutesValue('37')).toBe(37);
+    expect(parseMinutesValue('1')).toBe(1);
+    expect(parseMinutesValue('48')).toBe(48);
+  });
+
+  test('parses MM:SS format (legacy / balldontlie)', () => {
+    expect(parseMinutesValue('37:42')).toBe(37);
+    expect(parseMinutesValue('1:12')).toBe(1);
+    expect(parseMinutesValue('0:42')).toBe(0);
+  });
+
+  test('returns 0 for DNP-shaped inputs', () => {
+    expect(parseMinutesValue(null)).toBe(0);
+    expect(parseMinutesValue(undefined)).toBe(0);
+    expect(parseMinutesValue('')).toBe(0);
+    expect(parseMinutesValue(':00')).toBe(0);
+    expect(parseMinutesValue('0:00')).toBe(0);
+    expect(parseMinutesValue('00:00')).toBe(0);
+  });
+
+  test('returns 0 for unparseable input', () => {
+    expect(parseMinutesValue('garbage')).toBe(0);
+    expect(parseMinutesValue('--')).toBe(0);
   });
 });
 
@@ -447,5 +494,26 @@ describe('resolvePick', () => {
       expect(result.actualValue).toBeCloseTo(59.1, 5);
       expect(result.outcome.won).toBe(true);
     }
+  });
+
+  test('resolves a minutes pick (LeBron box has min "35:42")', () => {
+    const result = resolvePick(
+      { playerName: 'LeBron James', statType: 'minutes', line: 32.5, direction: 'over' },
+      boxes,
+    );
+    expect(result.status).toBe('resolved');
+    if (result.status === 'resolved') {
+      expect(result.actualValue).toBe(35);
+      expect(result.outcome).toEqual({ won: true, pushed: false });
+    }
+  });
+
+  test('minutes pick respects DNP gating', () => {
+    // Anthony Davis is set up with min ":00" → didPlayerPlay false → dnp.
+    const result = resolvePick(
+      { playerName: 'Anthony Davis', statType: 'minutes', line: 28.5, direction: 'over' },
+      boxes,
+    );
+    expect(result.status).toBe('dnp');
   });
 });

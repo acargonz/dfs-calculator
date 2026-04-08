@@ -18,6 +18,7 @@
 
 import type { NextRequest } from 'next/server';
 import { verifyCronAuth } from '../src/lib/cronAuth';
+import { setNodeEnv } from './helpers/env';
 
 function makeRequest(headers: Record<string, string>): NextRequest {
   const lower: Record<string, string> = {};
@@ -36,7 +37,7 @@ describe('verifyCronAuth', () => {
 
   beforeEach(() => {
     delete process.env.CRON_SECRET;
-    process.env.NODE_ENV = 'test';
+    setNodeEnv('test');
   });
 
   afterAll(() => {
@@ -44,7 +45,7 @@ describe('verifyCronAuth', () => {
   });
 
   it('returns 503 in production when CRON_SECRET is unset', async () => {
-    process.env.NODE_ENV = 'production';
+    setNodeEnv('production');
     const res = verifyCronAuth(makeRequest({}));
     expect(res).not.toBeNull();
     expect(res?.status).toBe(503);
@@ -53,14 +54,14 @@ describe('verifyCronAuth', () => {
   it('returns null (allows) in development when CRON_SECRET is unset', () => {
     // Suppress the warn() so the test output stays clean
     const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
-    process.env.NODE_ENV = 'development';
+    setNodeEnv('development');
     const res = verifyCronAuth(makeRequest({}));
     expect(res).toBeNull();
     warnSpy.mockRestore();
   });
 
   it('returns null when the Authorization header matches Bearer <secret>', () => {
-    process.env.NODE_ENV = 'production';
+    setNodeEnv('production');
     process.env.CRON_SECRET = 'super-secret-value';
     const res = verifyCronAuth(
       makeRequest({ authorization: 'Bearer super-secret-value' }),
@@ -69,7 +70,7 @@ describe('verifyCronAuth', () => {
   });
 
   it('returns 401 when the Bearer token is wrong', () => {
-    process.env.NODE_ENV = 'production';
+    setNodeEnv('production');
     process.env.CRON_SECRET = 'super-secret-value';
     const res = verifyCronAuth(
       makeRequest({ authorization: 'Bearer wrong-secret-value' }),
@@ -79,7 +80,7 @@ describe('verifyCronAuth', () => {
   });
 
   it('returns 401 when the Authorization header is missing', () => {
-    process.env.NODE_ENV = 'production';
+    setNodeEnv('production');
     process.env.CRON_SECRET = 'super-secret-value';
     const res = verifyCronAuth(makeRequest({}));
     expect(res).not.toBeNull();
@@ -87,7 +88,7 @@ describe('verifyCronAuth', () => {
   });
 
   it('returns 401 when the Bearer token is the wrong length', () => {
-    process.env.NODE_ENV = 'production';
+    setNodeEnv('production');
     process.env.CRON_SECRET = 'super-secret-value';
     const res = verifyCronAuth(makeRequest({ authorization: 'Bearer short' }));
     expect(res).not.toBeNull();
@@ -95,7 +96,7 @@ describe('verifyCronAuth', () => {
   });
 
   it('returns 401 for a malformed Authorization header (no Bearer prefix)', () => {
-    process.env.NODE_ENV = 'production';
+    setNodeEnv('production');
     process.env.CRON_SECRET = 'super-secret-value';
     const res = verifyCronAuth(
       makeRequest({ authorization: 'super-secret-value' }),
@@ -105,7 +106,7 @@ describe('verifyCronAuth', () => {
   });
 
   it('returns 401 for a token that starts with the right characters but differs later', () => {
-    process.env.NODE_ENV = 'production';
+    setNodeEnv('production');
     process.env.CRON_SECRET = 'super-secret-value';
     const res = verifyCronAuth(
       makeRequest({ authorization: 'Bearer super-secret-valuX' }),

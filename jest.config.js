@@ -3,6 +3,10 @@ module.exports = {
   preset: 'ts-jest',
   testEnvironment: 'node',
   roots: ['<rootDir>/__tests__'],
+  // Files under __tests__/helpers/ are shared test utilities, not test
+  // suites — without this, Jest's default testMatch would pick them up
+  // and fail with "Your test suite must contain at least one test."
+  testPathIgnorePatterns: ['/node_modules/', '/__tests__/helpers/'],
   moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx'],
   transform: {
     '^.+\\.tsx?$': ['ts-jest', { tsconfig: { jsx: 'react-jsx' } }],

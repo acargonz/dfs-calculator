@@ -123,10 +123,11 @@ export function transformProps(rawEvent: OddsApiEventOdds): PlayerProp[] {
         if (!name) continue;
 
         const key = `${name}_${outcome.point}`;
-        if (!playerOutcomes.has(key)) {
-          playerOutcomes.set(key, {});
+        let entry = playerOutcomes.get(key);
+        if (!entry) {
+          entry = {};
+          playerOutcomes.set(key, entry);
         }
-        const entry = playerOutcomes.get(key)!;
 
         if (outcome.name === 'Over') {
           entry.over = outcome;

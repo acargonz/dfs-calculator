@@ -13,6 +13,7 @@
 
 import type { NextRequest } from 'next/server';
 import { isAllowedOrigin } from '../src/lib/originCheck';
+import { setNodeEnv } from './helpers/env';
 
 /** Build a fake NextRequest with only the headers we care about. */
 function makeRequest(headers: Record<string, string>): NextRequest {
@@ -38,7 +39,7 @@ describe('isAllowedOrigin', () => {
     delete process.env.NEXT_PUBLIC_SITE_URL;
     delete process.env.ALLOWED_ORIGINS;
     delete process.env.VERCEL_URL;
-    process.env.NODE_ENV = 'test';
+    setNodeEnv('test');
   });
 
   afterAll(() => {
@@ -46,15 +47,41 @@ describe('isAllowedOrigin', () => {
   });
 
   it('fails closed when the allowlist is empty in production', () => {
-    process.env.NODE_ENV = 'production';
+    setNodeEnv('production');
     const req = makeRequest({ origin: 'https://example.com' });
     expect(isAllowedOrigin(req)).toBe(false);
   });
 
   it('allows localhost in development even without NEXT_PUBLIC_SITE_URL', () => {
-    process.env.NODE_ENV = 'development';
+    setNodeEnv('development');
     const req = makeRequest({ origin: 'http://localhost:3000' });
     expect(isAllowedOrigin(req)).toBe(true);
+  });
+
+  it('allows any localhost port in development (Next.js auto-picks 3001/3002 when 3000 is busy)', () => {
+    setNodeEnv('development');
+    expect(
+      isAllowedOrigin(makeRequest({ origin: 'http://localhost:3001' })),
+    ).toBe(true);
+    expect(
+      isAllowedOrigin(makeRequest({ origin: 'http://localhost:54321' })),
+    ).toBe(true);
+    expect(
+      isAllowedOrigin(makeRequest({ origin: 'http://127.0.0.1:8080' })),
+    ).toBe(true);
+  });
+
+  it('allows localhost via Referer when Origin is missing (dev)', () => {
+    setNodeEnv('development');
+    const req = makeRequest({ referer: 'http://localhost:3001/calc' });
+    expect(isAllowedOrigin(req)).toBe(true);
+  });
+
+  it('does NOT bypass localhost in production', () => {
+    setNodeEnv('production');
+    process.env.NEXT_PUBLIC_SITE_URL = 'https://dfs-calculator.example.com';
+    const req = makeRequest({ origin: 'http://localhost:3000' });
+    expect(isAllowedOrigin(req)).toBe(false);
   });
 
   it('allows a request whose Origin matches NEXT_PUBLIC_SITE_URL', () => {

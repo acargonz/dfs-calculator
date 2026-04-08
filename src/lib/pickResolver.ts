@@ -47,6 +47,7 @@ export type ResolvableStatType =
   | 'blocks'
   | 'threes'
   | 'turnovers'
+  | 'minutes'
   | 'pra'
   | 'pts+rebs'
   | 'pts+asts'
@@ -86,6 +87,9 @@ export function canonicalizeStatType(raw: string): ResolvableStatType | null {
     return 'threes';
   if (s === 'turnovers' || s === 'tov' || s === 'to' || s === 'player_turnovers')
     return 'turnovers';
+
+  if (s === 'minutes' || s === 'min' || s === 'mins' || s === 'player_minutes')
+    return 'minutes';
 
   if (s === 'pra' || s === 'pts+rebs+asts' || s === 'pts + rebs + asts') return 'pra';
   if (s === 'pr' || s === 'pts+rebs' || s === 'pts + rebs') return 'pts+rebs';
@@ -130,6 +134,34 @@ export function computeFantasyScore(box: RawBoxScore): number {
 }
 
 /**
+ * Parse a `min` field into a numeric minutes-played value for resolving
+ * "minutes" props. ESPN sends bare integers like "37"; legacy/balldontlie
+ * sends "MM:SS" like "37:42". DFS books grade minutes props at the integer
+ * minute count from the official box score, so we take the minute portion
+ * either way (no rounding from the seconds half).
+ *
+ * Returns 0 for DNP/empty/unparseable input. Callers should already have
+ * filtered out DNP rows via `didPlayerPlay` before reaching this point —
+ * the 0 fallback is defense-in-depth.
+ */
+export function parseMinutesValue(min: string | null | undefined): number {
+  if (min === null || min === undefined) return 0;
+  const trimmed = min.toString().trim();
+  if (
+    trimmed === '' ||
+    trimmed === ':00' ||
+    trimmed === '0:00' ||
+    trimmed === '00:00'
+  ) {
+    return 0;
+  }
+  // "MM:SS" form: keep just the minute count.
+  const minutePart = trimmed.includes(':') ? trimmed.split(':')[0] : trimmed;
+  const n = Number(minutePart);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/**
  * Convert a box-score row + canonical stat type → actual numeric value for
  * that pick. Returns `null` only for stat types we don't recognize (the
  * caller is expected to check canonicalizeStatType first, so this is a
@@ -154,6 +186,8 @@ export function computeActualValue(
       return box.fg3m;
     case 'turnovers':
       return box.turnover;
+    case 'minutes':
+      return parseMinutesValue(box.min);
     case 'pra':
       return box.pts + box.reb + box.ast;
     case 'pts+rebs':
