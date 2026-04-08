@@ -5,6 +5,7 @@ import {
   processBatch,
   applyPostseasonKellyReduction,
   isPostseasonSlice,
+  deriveHomeAway,
   POSTSEASON_KELLY_MULTIPLIER,
   type BatchPlayerResult,
   type BatchInput,
@@ -97,6 +98,49 @@ describe('getStatMean', () => {
 
   it('returns 0 for unknown stat type', () => {
     expect(getStatMean(mockStats.stats, 'unknown')).toBe(0);
+  });
+});
+
+describe('deriveHomeAway', () => {
+  it('returns home when player team matches the home team exactly', () => {
+    expect(deriveHomeAway('Boston Celtics', 'Boston Celtics', 'Toronto Raptors')).toBe('home');
+  });
+
+  it('returns away when player team matches the away team exactly', () => {
+    expect(deriveHomeAway('Toronto Raptors', 'Boston Celtics', 'Toronto Raptors')).toBe('away');
+  });
+
+  it('matches case-insensitively', () => {
+    expect(deriveHomeAway('boston celtics', 'BOSTON CELTICS', 'Toronto Raptors')).toBe('home');
+  });
+
+  it('matches via partial-contains either direction (player includes prop or vice versa)', () => {
+    // Player team is "Celtics" (shorter), home is "Boston Celtics" (longer)
+    expect(deriveHomeAway('Celtics', 'Boston Celtics', 'Toronto Raptors')).toBe('home');
+    // Player team is "Los Angeles Lakers" (longer), away is "Lakers" (shorter)
+    expect(deriveHomeAway('Los Angeles Lakers', 'Boston Celtics', 'Lakers')).toBe('away');
+  });
+
+  it('returns null when player team is missing', () => {
+    expect(deriveHomeAway(undefined, 'Boston Celtics', 'Toronto Raptors')).toBeNull();
+    expect(deriveHomeAway('', 'Boston Celtics', 'Toronto Raptors')).toBeNull();
+  });
+
+  it('returns null when both home and away teams are missing', () => {
+    expect(deriveHomeAway('Boston Celtics', undefined, undefined)).toBeNull();
+  });
+
+  it('returns null when player team matches neither side', () => {
+    expect(deriveHomeAway('Miami Heat', 'Boston Celtics', 'Toronto Raptors')).toBeNull();
+  });
+
+  it('tolerates whitespace on all inputs', () => {
+    expect(deriveHomeAway('  Boston Celtics  ', '  Boston Celtics  ', '  Toronto Raptors  ')).toBe('home');
+  });
+
+  it('does NOT confuse home and away when only one side is provided', () => {
+    expect(deriveHomeAway('Boston Celtics', 'Boston Celtics', undefined)).toBe('home');
+    expect(deriveHomeAway('Toronto Raptors', undefined, 'Toronto Raptors')).toBe('away');
   });
 });
 

@@ -33,6 +33,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { PickRow } from '../lib/supabase';
 import type { PickSummary } from '../lib/pickHistory';
+import type { Tier } from '../lib/math';
 import {
   reliabilityCurve,
   bootstrapCI,
@@ -49,6 +50,7 @@ import {
   pickToRawPrediction,
   pickToResolved,
   pickToCLV,
+  coerceTier,
 } from '../lib/pickHistory';
 
 interface PicksResponse {
@@ -108,7 +110,40 @@ export interface DashboardViewModel {
     avgCLV: number;
     clvPicks: number;
   }>;
+  /**
+   * Per-tier breakdown of resolved picks. Each row carries the tier label,
+   * the count of decided picks (won + lost, pushes excluded), the win
+   * rate, and the calculator's tier definition (the threshold the
+   * calculator is "promising"). Lets the user verify that picks tagged
+   * HIGH actually win at the rate the threshold implies.
+   *
+   * Tiers with zero decided picks are still emitted with NaN hitRate so
+   * the row renders an empty placeholder rather than disappearing.
+   */
+  tierBreakdown: Array<{
+    tier: Tier;
+    decided: number;
+    pushed: number;
+    hitRate: number;
+    /** The calculator's promised win rate for this tier (probability threshold). */
+    promisedRate: number;
+  }>;
 }
+
+/**
+ * Calculator tier thresholds — kept in sync with src/lib/math.ts:assignTier()
+ * (lines 411-413). Each value is the minimum *blended* probability that earns
+ * the tier, which is also the rate the user has implicitly been promised when
+ * they see that tier. Used to compute the "promised vs actual" delta in the
+ * tier breakdown table — if HIGH picks systematically win less than 58%, the
+ * tier definition is over-promising and the model is mis-calibrated.
+ */
+const TIER_PROMISED_RATE: Record<Tier, number> = {
+  HIGH: 0.58,
+  MEDIUM: 0.54,
+  LOW: 0.5,
+  REJECT: 0,
+};
 
 export function buildDashboardViewModel(picks: PickRow[]): DashboardViewModel {
   // --- Reliability curves (AI + raw) --------------------------------------
@@ -162,6 +197,36 @@ export function buildDashboardViewModel(picks: PickRow[]): DashboardViewModel {
       ? bootstrapCI(clvValues, BOOTSTRAP_ITERATIONS, 0.95, BOOTSTRAP_SEED)
       : { mean: NaN, lower: NaN, upper: NaN };
 
+  // --- Tier breakdown -----------------------------------------------------
+  // For each tier, count decided picks (won/lost), pushes, and compute the
+  // hit rate. Uses coerceTier from pickHistory.ts so the A/B/C → HIGH/MED/LOW
+  // translation matches what the rest of the app does — production stores
+  // the AI-native A/B/C labels, legacy fixtures use HIGH/MED/LOW directly.
+  const tierOrder: Tier[] = ['HIGH', 'MEDIUM', 'LOW', 'REJECT'];
+  const tierBreakdown = tierOrder.map((tier) => {
+    let decided = 0;
+    let pushed = 0;
+    let won = 0;
+    for (const p of picks) {
+      const mappedTier = coerceTier(p.ai_confidence_tier);
+      if (mappedTier !== tier) continue;
+      if (p.won === null || p.won === undefined) continue;
+      if (p.pushed) {
+        pushed += 1;
+        continue;
+      }
+      decided += 1;
+      if (p.won === true) won += 1;
+    }
+    return {
+      tier,
+      decided,
+      pushed,
+      hitRate: decided > 0 ? won / decided : NaN,
+      promisedRate: TIER_PROMISED_RATE[tier],
+    };
+  });
+
   // --- By bookmaker breakdown ---------------------------------------------
   const bookmakerGroups = new Map<string, PickRow[]>();
   for (const p of picks) {
@@ -196,6 +261,7 @@ export function buildDashboardViewModel(picks: PickRow[]): DashboardViewModel {
     flatROICI,
     clvCI,
     byBookmaker,
+    tierBreakdown,
   };
 }
 
@@ -310,6 +376,78 @@ export default function CalibrationDashboard() {
             hint="Positive = beating the closing line"
           />
         </div>
+      </section>
+
+      {/* ---- Hit rate by tier ---- */}
+      <section
+        className="rounded-lg border p-4"
+        data-testid="tier-breakdown"
+        style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-card)' }}
+      >
+        <h2 className="mb-2 text-sm font-bold uppercase tracking-wider" style={{ color: 'var(--text-primary)' }}>
+          Hit Rate by Tier
+        </h2>
+        <p className="mb-4 text-xs" style={{ color: 'var(--text-muted)' }}>
+          Each tier carries an implicit promise — HIGH says &ldquo;the model
+          believes this hits at least 58% of the time.&rdquo; If the actual rate
+          systematically undershoots the promise, the tier definitions are
+          over-promising and the model is mis-calibrated.
+        </p>
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="text-left" style={{ color: 'var(--text-muted)' }}>
+              <th className="py-1">Tier</th>
+              <th className="py-1 text-right">Decided</th>
+              <th className="py-1 text-right">Pushed</th>
+              <th className="py-1 text-right">Actual</th>
+              <th className="py-1 text-right">Promised</th>
+              <th className="py-1 text-right">Δ</th>
+            </tr>
+          </thead>
+          <tbody>
+            {vm.tierBreakdown.map((row) => {
+              const delta = Number.isFinite(row.hitRate)
+                ? row.hitRate - row.promisedRate
+                : NaN;
+              const deltaColor = !Number.isFinite(delta)
+                ? 'var(--text-muted)'
+                : delta >= 0
+                  ? '#10b981'
+                  : delta >= -0.03
+                    ? '#f59e0b'
+                    : '#ef4444';
+              return (
+                <tr
+                  key={row.tier}
+                  className="border-t"
+                  data-testid={`tier-row-${row.tier}`}
+                  style={{ borderColor: 'var(--border-subtle)' }}
+                >
+                  <td className="py-1 font-semibold" style={{ color: 'var(--text-primary)' }}>
+                    {row.tier}
+                  </td>
+                  <td className="py-1 text-right" style={{ color: 'var(--text-secondary)' }}>
+                    {row.decided}
+                  </td>
+                  <td className="py-1 text-right" style={{ color: 'var(--text-muted)' }}>
+                    {row.pushed}
+                  </td>
+                  <td className="py-1 text-right" style={{ color: 'var(--text-secondary)' }}>
+                    {fmtPct(row.hitRate)}
+                  </td>
+                  <td className="py-1 text-right" style={{ color: 'var(--text-muted)' }}>
+                    {row.tier === 'REJECT' ? '—' : fmtPct(row.promisedRate)}
+                  </td>
+                  <td className="py-1 text-right font-semibold" style={{ color: deltaColor }}>
+                    {!Number.isFinite(delta) || row.tier === 'REJECT'
+                      ? '—'
+                      : `${delta >= 0 ? '+' : ''}${(delta * 100).toFixed(1)}pp`}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </section>
 
       {/* ---- Reliability curve ---- */}

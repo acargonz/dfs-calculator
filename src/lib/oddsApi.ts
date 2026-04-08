@@ -56,6 +56,16 @@ export interface PlayerProp {
   overOdds: number;  // American odds
   underOdds: number; // American odds
   bookmaker: string;
+  /**
+   * Home team for the game this prop belongs to. Optional because legacy
+   * fixtures and crossReferenceOdds fallbacks don't carry it. When present,
+   * batchProcessor uses it (along with the player's team from balldontlie)
+   * to derive the home/away column persisted on each pick row — that
+   * column unblocks all home-vs-away calibration analysis.
+   */
+  homeTeam?: string;
+  /** Away team for the game this prop belongs to. See homeTeam. */
+  awayTeam?: string;
 }
 
 // Market key → our stat type mapping
@@ -136,6 +146,14 @@ export function transformProps(rawEvent: OddsApiEventOdds): PlayerProp[] {
         if (seen.has(uniqueKey)) continue;
         seen.add(uniqueKey);
 
+        // Attach home/away team only when the source event carries them
+        // (production always does; some test fixtures don't). Spreading
+        // the conditional object keeps the prop shape clean for existing
+        // toEqual() assertions in oddsApi.test.ts.
+        const teamMeta: { homeTeam?: string; awayTeam?: string } = {};
+        if (rawEvent.home_team) teamMeta.homeTeam = rawEvent.home_team;
+        if (rawEvent.away_team) teamMeta.awayTeam = rawEvent.away_team;
+
         props.push({
           playerName,
           statType,
@@ -143,6 +161,7 @@ export function transformProps(rawEvent: OddsApiEventOdds): PlayerProp[] {
           overOdds: pair.over.price,
           underOdds: pair.under.price,
           bookmaker: bookmaker.key,
+          ...teamMeta,
         });
       }
     }
@@ -181,6 +200,13 @@ export interface OddsApiBookmaker {
 export interface OddsApiEventOdds {
   id: string;
   bookmakers: OddsApiBookmaker[];
+  /**
+   * The Odds API returns these on every event-odds response. They're
+   * optional in the type because some legacy test fixtures pre-date the
+   * field; runtime production responses always include them.
+   */
+  home_team?: string;
+  away_team?: string;
 }
 
 // --- Cross-reference: match pasted players to real sportsbook odds ---

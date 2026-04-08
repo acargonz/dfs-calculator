@@ -204,10 +204,22 @@ export function pickToCLV(pick: PickRow): CLVPick | null {
 }
 
 /**
- * Coerce a string tier into the canonical Tier enum, defaulting to REJECT.
- * Picks store tier as `text`, so we normalize once at the boundary.
+ * Map a raw `ai_confidence_tier` column value to a calculator Tier.
+ *
+ * The AI ensemble emits `A` / `B` / `C` / `REJECT` (see aiAnalysis.ts line
+ * 193 — the prompt explicitly translates HIGH→A, MEDIUM→B, LOW→C). Older
+ * test fixtures and the calibration dashboard's tier-rank logic use the
+ * calculator-native HIGH / MEDIUM / LOW labels. This function accepts both
+ * conventions so production data and tests behave identically — without it,
+ * production picks all bucket into REJECT and `hitRateByTier` looks empty.
  */
-function coerceTier(value: string | null): Tier {
+export function coerceTier(value: string | null | undefined): Tier {
+  if (value == null) return 'REJECT';
+  // AI-native (current production)
+  if (value === 'A') return 'HIGH';
+  if (value === 'B') return 'MEDIUM';
+  if (value === 'C') return 'LOW';
+  // Calculator-native (legacy fixtures + manual writes)
   if (value === 'HIGH' || value === 'MEDIUM' || value === 'LOW') return value;
   return 'REJECT';
 }

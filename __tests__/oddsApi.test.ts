@@ -124,6 +124,64 @@ describe('transformProps', () => {
     expect(transformProps({ id: 'x', bookmakers: [] })).toEqual([]);
   });
 
+  it('propagates homeTeam and awayTeam from the source event onto each prop', () => {
+    const event: OddsApiEventOdds = {
+      id: 'event1',
+      home_team: 'Boston Celtics',
+      away_team: 'Toronto Raptors',
+      bookmakers: [
+        {
+          key: 'fanduel',
+          markets: [
+            {
+              key: 'player_points',
+              outcomes: [
+                { name: 'Over', description: 'Jayson Tatum', price: -120, point: 27.5 },
+                { name: 'Under', description: 'Jayson Tatum', price: 100, point: 27.5 },
+              ],
+            },
+            {
+              key: 'player_assists',
+              outcomes: [
+                { name: 'Over', description: 'Scottie Barnes', price: -110, point: 5.5 },
+                { name: 'Under', description: 'Scottie Barnes', price: -110, point: 5.5 },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    const props = transformProps(event);
+    expect(props).toHaveLength(2);
+    expect(props.every((p) => p.homeTeam === 'Boston Celtics')).toBe(true);
+    expect(props.every((p) => p.awayTeam === 'Toronto Raptors')).toBe(true);
+  });
+
+  it('omits homeTeam and awayTeam keys when the source event lacks them', () => {
+    // Backward-compat: legacy fixtures without home_team/away_team should
+    // still produce props with no team keys, so the existing toEqual()
+    // assertions above keep passing.
+    const event = makeEvent([
+      {
+        key: 'fanduel',
+        markets: [
+          {
+            key: 'player_points',
+            outcomes: [
+              { name: 'Over', description: 'LeBron', price: -110, point: 25.5 },
+              { name: 'Under', description: 'LeBron', price: -110, point: 25.5 },
+            ],
+          },
+        ],
+      },
+    ]);
+    const props = transformProps(event);
+    expect(props).toHaveLength(1);
+    expect(props[0]).not.toHaveProperty('homeTeam');
+    expect(props[0]).not.toHaveProperty('awayTeam');
+  });
+
   it('maps combo market keys to stat types', () => {
     const event = makeEvent([
       {

@@ -436,4 +436,36 @@ describe('summarizePicks', () => {
     // Unknown tier strings collapse into REJECT bucket
     expect(summary.hitRateByTier.REJECT).toBe(1);
   });
+
+  test('coerceTier translates AI-native A/B/C to HIGH/MEDIUM/LOW (production data path)', () => {
+    // This is the bug we fixed: production /api/analyze writes
+    // ai_confidence_tier as 'A'/'B'/'C'/'REJECT' (the AI's native labels per
+    // aiAnalysis.ts:193). Pre-fix, all of these silently collapsed into the
+    // REJECT bucket because coerceTier only knew about HIGH/MEDIUM/LOW.
+    const picks = [
+      makePick({ id: 'p1', won: true, ai_confidence_tier: 'A' }),
+      makePick({ id: 'p2', won: false, ai_confidence_tier: 'A' }),
+      makePick({ id: 'p3', won: true, ai_confidence_tier: 'B' }),
+      makePick({ id: 'p4', won: true, ai_confidence_tier: 'C' }),
+      makePick({ id: 'p5', won: false, ai_confidence_tier: 'C' }),
+    ];
+    const summary = summarizePicks(picks);
+    expect(summary.hitRateByTier.HIGH).toBe(0.5);
+    expect(summary.hitRateByTier.MEDIUM).toBe(1);
+    expect(summary.hitRateByTier.LOW).toBe(0.5);
+    expect(Number.isNaN(summary.hitRateByTier.REJECT)).toBe(true);
+  });
+
+  test('coerceTier accepts both HIGH/MEDIUM/LOW and A/B/C in the same dataset', () => {
+    // Dual-format support so legacy fixtures + production data coexist
+    // without separate code paths.
+    const picks = [
+      makePick({ id: 'p1', won: true, ai_confidence_tier: 'HIGH' }),
+      makePick({ id: 'p2', won: true, ai_confidence_tier: 'A' }),
+      makePick({ id: 'p3', won: false, ai_confidence_tier: 'A' }),
+    ];
+    const summary = summarizePicks(picks);
+    // 3 HIGH-tier picks total, 2 wins → 66.7%
+    expect(summary.hitRateByTier.HIGH).toBeCloseTo(2 / 3, 5);
+  });
 });

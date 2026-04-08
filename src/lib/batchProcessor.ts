@@ -72,6 +72,15 @@ export interface BatchPlayerResult {
   underOdds: number;
   /** Sportsbook this prop came from (optional for legacy/test fixtures). */
   bookmaker?: string;
+  /**
+   * 'home' or 'away' relative to the player's actual team. Derived by
+   * comparing the balldontlie team name to the prop's homeTeam/awayTeam.
+   * Null when the source data didn't carry team context — most often the
+   * crossReferenceOdds path or pre-team-plumbing test fixtures. Persisted
+   * to picks.home_away on insert so the calibration dashboard can slice
+   * by venue.
+   */
+  homeAway?: 'home' | 'away' | null;
   result: CalculationResult | null;
   status: BatchStatus;
   statusMessage?: string;
@@ -95,6 +104,42 @@ export interface BatchResult {
     reject: number;
     errors: number;
   };
+}
+
+/**
+ * Determine whether a player is at home or away in a given game by matching
+ * their team name (from balldontlie) against the prop's homeTeam / awayTeam
+ * (from The Odds API).
+ *
+ * Why a fuzzy match: balldontlie returns "Boston Celtics" / "Los Angeles
+ * Lakers" while The Odds API uses identical strings — but we cannot trust
+ * casing or future formatting changes. Case-insensitive partial-contains
+ * is a tight, predictable rule: either the player's team string is found
+ * inside the prop's team string or vice versa. Returns null when neither
+ * side can be confirmed (legacy fixtures, missing team data, or a real
+ * mismatch worth flagging in calibration analysis).
+ *
+ * Pure: no IO, fully unit-testable.
+ */
+export function deriveHomeAway(
+  playerTeam: string | undefined,
+  homeTeam: string | undefined,
+  awayTeam: string | undefined,
+): 'home' | 'away' | null {
+  if (!playerTeam || (!homeTeam && !awayTeam)) return null;
+  const t = playerTeam.toLowerCase().trim();
+  if (!t) return null;
+  const matches = (a: string, b: string): boolean =>
+    a.includes(b) || b.includes(a);
+  if (homeTeam) {
+    const h = homeTeam.toLowerCase().trim();
+    if (h && matches(t, h)) return 'home';
+  }
+  if (awayTeam) {
+    const a = awayTeam.toLowerCase().trim();
+    if (a && matches(t, a)) return 'away';
+  }
+  return null;
 }
 
 /**
@@ -204,6 +249,7 @@ export async function processBatch(
     try {
       const playerStats = await fetchStatsFn(prop.playerName);
       const mean = getStatMean(playerStats.stats, prop.statType);
+      const homeAway = deriveHomeAway(playerStats.team, prop.homeTeam, prop.awayTeam);
 
       if (mean <= 0) {
         results.push({
@@ -215,6 +261,7 @@ export async function processBatch(
           overOdds: prop.overOdds,
           underOdds: prop.underOdds,
           bookmaker: prop.bookmaker,
+          homeAway,
           result: null,
           status: 'api_error',
           statusMessage: `No ${prop.statType} average found`,
@@ -251,6 +298,7 @@ export async function processBatch(
         overOdds: prop.overOdds,
         underOdds: prop.underOdds,
         bookmaker: prop.bookmaker,
+        homeAway,
         result,
         status: 'success',
         seasonType: playerStats.seasonType,
