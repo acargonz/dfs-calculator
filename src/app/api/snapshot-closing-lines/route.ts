@@ -25,7 +25,9 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { getSupabase } from '@/lib/supabase';
+import { getSupabaseAdmin } from '@/lib/supabaseAdmin';
+import { verifyCronAuth } from '@/lib/cronAuth';
+import { misconfigured, internalError } from '@/lib/apiErrors';
 import {
   transformGames,
   transformProps,
@@ -60,30 +62,19 @@ interface SnapshotResponse {
 export async function GET(request: NextRequest) {
   const start = Date.now();
 
-  // Auth: in production, Vercel cron sends Authorization: Bearer <CRON_SECRET>.
-  // In dev, leaving CRON_SECRET unset makes the route open.
-  const cronSecret = process.env.CRON_SECRET;
-  if (cronSecret) {
-    const auth = request.headers.get('authorization');
-    if (auth !== `Bearer ${cronSecret}`) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
-  }
+  // Auth — fail-CLOSED cron Bearer check. Fixes security finding C4
+  // (the previous inline check was fail-open when CRON_SECRET was unset).
+  const authFailure = verifyCronAuth(request);
+  if (authFailure) return authFailure;
 
   const apiKey = process.env.ODDS_API_KEY;
   if (!apiKey) {
-    return NextResponse.json(
-      { error: 'ODDS_API_KEY not configured' },
-      { status: 500 },
-    );
+    return misconfigured('ODDS_API_KEY unset');
   }
 
-  const supabase = getSupabase();
+  const supabase = getSupabaseAdmin();
   if (!supabase) {
-    return NextResponse.json(
-      { error: 'Supabase not configured' },
-      { status: 500 },
-    );
+    return misconfigured('Supabase admin client not configured');
   }
 
   const errors: string[] = [];
@@ -97,10 +88,7 @@ export async function GET(request: NextRequest) {
     .is('closing_snapshot_at', null);
 
   if (pickErr) {
-    return NextResponse.json(
-      { error: `Failed to fetch pending picks: ${pickErr.message}` },
-      { status: 500 },
-    );
+    return internalError(pickErr, 'snapshot: fetch pending');
   }
 
   const pendingPicks: PendingPick[] = (rawPicks ?? []).map((p) => ({

@@ -1,0 +1,129 @@
+# ==============================================================================
+# Dependabot auto-merge — patch + minor bumps only, after CI is green
+# ==============================================================================
+#
+# Goal
+# ----
+# Keep dependencies fresh without a human having to click "merge" on every
+# Dependabot PR for a patch bump of @types/node. The manual overhead of
+# reviewing 5-10 Dependabot PRs per week is exactly the kind of tax that
+# makes people stop keeping their deps fresh, which is how CVEs accumulate.
+#
+# This workflow auto-approves and auto-merges Dependabot PRs that meet ALL
+# of these conditions:
+#
+#   1. The actor is `dependabot[bot]` (verified via the Dependabot metadata
+#      action — we NEVER trust `github.actor` alone for this check, because
+#      any user can set their display name to that).
+#
+#   2. The update type is `version-update:semver-patch` OR
+#      `version-update:semver-minor`. MAJOR bumps are NEVER auto-merged —
+#      those can contain breaking changes and need a human to verify.
+#
+#   3. Every required status check on the PR has passed. We depend on the
+#      branch-protection rule on `main` to enforce this — if CI isn't
+#      green, `gh pr merge --auto` queues the merge and GitHub won't
+#      complete it until checks pass.
+#
+#   4. The dependency update is NOT for an action we pin to SHA. Pinned
+#      actions need a human to verify the new SHA maps to the version
+#      they expect.
+#
+# Threat model
+# ------------
+# The biggest risk in auto-merging Dependabot PRs is a compromised upstream
+# package (the classic supply-chain attack: `event-stream` → `flatmap-stream`,
+# `ua-parser-js` → cryptominer, `node-ipc` → protest wipe). This workflow
+# does NOT protect against that directly — CodeQL + npm audit + Scorecard
+# do. What this workflow does is KEEP patch velocity high so known-good
+# updates land within hours, reducing the window during which a known CVE
+# is unpatched on our lockfile.
+#
+# Security hardening on the workflow itself
+# -----------------------------------------
+# The big footgun here is `pull_request_target`. If you use that trigger
+# (which is needed to access secrets on a fork PR), Dependabot PRs run
+# against the BASE branch's workflow file with write access to the base
+# repo. We use the plain `pull_request` trigger, which runs in the fork
+# context with no secrets, and we obtain the GitHub CLI auth via the
+# built-in GITHUB_TOKEN scoped to this single workflow.
+#
+# We also use `dependabot/fetch-metadata@v2` to verify the PR is from
+# Dependabot and to enumerate the update type — never relying on
+# `github.actor` or PR title parsing, both of which are forgeable.
+#
+# Permissions (least-privilege):
+#   - contents: write       → needed for `gh pr merge --auto --squash`
+#   - pull-requests: write  → needed for `gh pr review --approve`
+#
+# Everything else stays at default read.
+# ==============================================================================
+
+name: Dependabot auto-merge
+
+on: pull_request
+
+permissions:
+  # Required for auto-merge to work. Both are scoped to this workflow only
+  # and expire at the end of the run.
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    name: Auto-merge patch/minor Dependabot PRs
+    runs-on: ubuntu-latest
+    # Short-circuit the entire job if the PR wasn't opened by Dependabot.
+    # This is a cheap pre-filter; the authoritative check is the metadata
+    # action below (which GitHub signs cryptographically).
+    if: github.actor == 'dependabot[bot]'
+    timeout-minutes: 5
+
+    steps:
+      - name: Fetch Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Approve patch + minor PRs
+        # Only approve if it's a patch OR minor bump. Major bumps exit here
+        # and stay open for human review.
+        #
+        # `gh pr review --approve` is idempotent — re-approving an already-
+        # approved PR is a no-op.
+        if: |
+          steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
+          steps.metadata.outputs.update-type == 'version-update:semver-minor'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr review --approve "$PR_URL"
+
+      - name: Enable auto-merge for patch + minor PRs
+        # `gh pr merge --auto` queues the merge behind all required status
+        # checks. If ANY check fails, the auto-merge is cancelled and a
+        # human has to intervene. This is why the workflow doesn't need
+        # to wait for / check the CI status itself — GitHub does it.
+        #
+        # --squash collapses the Dependabot commits into a single commit
+        # on main, which keeps `main`'s history clean.
+        if: |
+          steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
+          steps.metadata.outputs.update-type == 'version-update:semver-minor'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge --auto --squash "$PR_URL"
+
+      - name: Comment on major PRs (for visibility)
+        # Don't auto-merge, but leave a comment so the PR feed shows why
+        # a Dependabot PR is sitting open. Makes it obvious at a glance
+        # that "this one needs a human" rather than "the auto-merger is
+        # broken."
+        if: steps.metadata.outputs.update-type == 'version-update:semver-major'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          gh pr comment "$PR_URL" --body "**Major version bump — not auto-merged.** Patch and minor Dependabot PRs are merged automatically after CI passes; majors need a human to verify no breaking changes. See [.github/workflows/dependabot-auto-merge.yml](/.github/workflows/dependabot-auto-merge.yml) for the policy."

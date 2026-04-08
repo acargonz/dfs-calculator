@@ -1,3 +1,6 @@
+// Server-only — do NOT import into a Client Component.
+import 'server-only';
+
 import { NextRequest, NextResponse } from 'next/server';
 import {
   buildEventsUrl,
@@ -8,54 +11,69 @@ import {
   type OddsApiEvent,
   type OddsApiEventOdds,
 } from '@/lib/oddsApi';
+import { OddsQuery } from '@/lib/schemas';
+import { badRequest, misconfigured, internalError } from '@/lib/apiErrors';
 
-function getApiKey(): string {
-  const key = process.env.ODDS_API_KEY;
-  if (!key) throw new Error('ODDS_API_KEY not configured in .env.local');
-  return key;
+/**
+ * /api/odds — proxy for The Odds API.
+ *
+ * Why proxy instead of calling Odds API from the browser?
+ *   Hiding the ODDS_API_KEY on the server side. A client-side call would
+ *   require the key to be `NEXT_PUBLIC_` (bundled into the browser), which
+ *   would make it trivial to extract via DevTools and burn the monthly
+ *   quota. See OWASP API4:2023 — Unrestricted Resource Consumption.
+ *
+ * Security hardening (OWASP A03:2021 Injection / SSRF):
+ *   - The `eventId` query param is validated against a strict hex regex
+ *     in src/lib/schemas.ts before it's concatenated into the upstream
+ *     fetch URL. Without this, an attacker could try `eventId=../../evil`
+ *     or `eventId=1&other=host` and steer our server-side fetch() to an
+ *     unintended endpoint. The regex ^[a-f0-9]{16,64}$ only accepts what
+ *     The Odds API actually produces.
+ *   - Errors from upstream are never echoed verbatim to clients — they're
+ *     logged server-side via internalError() and clients get a generic
+ *     500 so we don't leak response bodies that might contain hints about
+ *     our infrastructure.
+ */
+function getApiKey(): string | null {
+  return process.env.ODDS_API_KEY ?? null;
 }
 
 export async function GET(request: NextRequest) {
-  const { searchParams } = request.nextUrl;
-  const type = searchParams.get('type');
+  // Parse + validate query params up front.
+  const parsed = OddsQuery.safeParse({
+    type: request.nextUrl.searchParams.get('type') ?? '',
+    eventId: request.nextUrl.searchParams.get('eventId') ?? undefined,
+  });
+  if (!parsed.success) {
+    return badRequest(parsed.error.issues[0]?.message ?? 'Invalid query');
+  }
+
+  const apiKey = getApiKey();
+  if (!apiKey) return misconfigured('ODDS_API_KEY unset');
 
   try {
-    if (type === 'games') {
-      return await handleGames();
-    } else if (type === 'props') {
-      const eventId = searchParams.get('eventId');
-      if (!eventId) {
-        return NextResponse.json({ error: 'eventId is required' }, { status: 400 });
-      }
-      return await handleProps(eventId);
-    } else {
-      return NextResponse.json({ error: 'type must be "games" or "props"' }, { status: 400 });
+    if (parsed.data.type === 'games') {
+      return await handleGames(apiKey);
     }
+    // type === 'props' — eventId required (Zod already enforced this)
+    return await handleProps(apiKey, parsed.data.eventId!);
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Unknown error';
-    return NextResponse.json({ error: message }, { status: 500 });
+    return internalError(err, 'odds');
   }
 }
 
-async function handleGames(): Promise<NextResponse> {
-  const apiKey = getApiKey();
-  // Explicit date range so we get the full slate (today + tomorrow), not
-  // just the narrow default window. See buildEventsUrl docstring for why.
+async function handleGames(apiKey: string): Promise<NextResponse> {
   const url = buildEventsUrl(apiKey);
-
   const res = await fetch(url);
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Odds API error (${res.status}): ${text}`);
+    throw new Error(`Odds API games: HTTP ${res.status}`);
   }
-
   const raw: OddsApiEvent[] = await res.json();
-  const games = transformGames(raw);
-  return NextResponse.json(games);
+  return NextResponse.json(transformGames(raw));
 }
 
-async function handleProps(eventId: string): Promise<NextResponse> {
-  const apiKey = getApiKey();
+async function handleProps(apiKey: string, eventId: string): Promise<NextResponse> {
   const url =
     `${ODDS_API_BASE}/events/${eventId}/odds` +
     `?apiKey=${apiKey}` +
@@ -65,11 +83,8 @@ async function handleProps(eventId: string): Promise<NextResponse> {
 
   const res = await fetch(url);
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Odds API error (${res.status}): ${text}`);
+    throw new Error(`Odds API props: HTTP ${res.status}`);
   }
-
   const raw: OddsApiEventOdds = await res.json();
-  const props = transformProps(raw);
-  return NextResponse.json(props);
+  return NextResponse.json(transformProps(raw));
 }

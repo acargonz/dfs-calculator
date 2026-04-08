@@ -13,20 +13,31 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { getSupabase } from '@/lib/supabase';
+import { getSupabaseAdmin } from '@/lib/supabaseAdmin';
+import { AcknowledgeQuery } from '@/lib/schemas';
+import { badRequest, internalError, misconfigured, errorResponse } from '@/lib/apiErrors';
+import { isAllowedOrigin } from '@/lib/originCheck';
 
 export async function POST(request: NextRequest) {
-  const id = request.nextUrl.searchParams.get('id');
-  if (!id) {
-    return NextResponse.json({ error: 'Missing id parameter' }, { status: 400 });
+  // Origin check — acknowledge is a mutating action, reject cross-origin
+  // browser requests (CSRF shield). Same-origin or matching Referer passes.
+  if (!isAllowedOrigin(request)) {
+    return errorResponse('forbidden', 'Cross-origin request blocked');
   }
 
-  const supabase = getSupabase();
+  // Zod-validate the `id` query param (must be a uuid). Using safeParse
+  // so a bad value yields 400 instead of 500.
+  const parsed = AcknowledgeQuery.safeParse({
+    id: request.nextUrl.searchParams.get('id') ?? '',
+  });
+  if (!parsed.success) {
+    return badRequest(parsed.error.issues[0]?.message ?? 'Invalid id');
+  }
+  const { id } = parsed.data;
+
+  const supabase = getSupabaseAdmin();
   if (!supabase) {
-    return NextResponse.json(
-      { error: 'Supabase not configured' },
-      { status: 500 },
-    );
+    return misconfigured('Supabase admin client not configured');
   }
 
   const acknowledgedAt = new Date().toISOString();
@@ -38,13 +49,10 @@ export async function POST(request: NextRequest) {
     .single();
 
   if (error) {
-    return NextResponse.json(
-      { error: `Failed to acknowledge: ${error.message}` },
-      { status: 500 },
-    );
+    return internalError(error, 'acknowledge');
   }
   if (!data) {
-    return NextResponse.json({ error: 'Alert not found' }, { status: 404 });
+    return errorResponse('not_found', 'Alert not found');
   }
 
   return NextResponse.json({ ok: true, id, acknowledged_at: acknowledgedAt });

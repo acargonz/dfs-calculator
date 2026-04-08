@@ -1,15 +1,11 @@
 # CLAUDE.md — DFS Calculator
 
-Read AGENTS.md first for full project context, math pipeline, and calibration data.
+`AGENTS.md` holds full project context, math pipeline, and calibration data.
+**Read it on demand, not preemptively** — see *Context discipline* below.
 
 ## Tech Stack
-- **Framework:** Next.js 15 (App Router)
-- **Language:** TypeScript (strict mode)
-- **UI:** React 19 + Tailwind CSS v4
-- **Testing:** Jest 29 + ts-jest + React Testing Library
-- **APIs:** The Odds API + PBP Stats + balldontlie.io + ESPN (injuries/rosters) + Gemini/Claude
-- **Database:** Supabase (pick tracking, prompt versioning) — optional, app works without it
-- **Runtime:** Node.js 18+
+Next.js 15 (App Router) · TypeScript strict · React 19 · Tailwind v4 · Jest 29 · Supabase (optional) · Node 18+
+APIs: The Odds API, PBP Stats, balldontlie.io, ESPN, Gemini/Claude
 
 ## Commands
 ```bash
@@ -20,7 +16,7 @@ npm audit            # Should show 0 vulnerabilities
 ```
 
 ## Workflow Rules
-1. **Read AGENTS.md** at the start of every session.
+1. **Read AGENTS.md** only when the task warrants it.
 2. **Plan before coding.** State what you will change and why.
 3. **One small task at a time.** One function or one component per change.
 4. **Run `npm test` after every change.** Fix failures before moving on.
@@ -28,130 +24,76 @@ npm audit            # Should show 0 vulnerabilities
 6. **Math is read-only** unless the user explicitly asks for math changes.
 7. **UI changes don't touch math.** Math changes don't touch UI.
 
-## Component Map
-```
-src/
-├── app/
-│   ├── layout.tsx              ← Root HTML layout
-│   ├── page.tsx                ← Renders <Calculator />
-│   ├── globals.css             ← CSS variables + Tailwind import
-│   └── api/
-│       ├── odds/route.ts           ← The Odds API proxy
-│       ├── player-stats/route.ts   ← PBP Stats (stats) + balldontlie (position)
-│       ├── injuries/route.ts       ← ESPN NBA injuries (free, no auth)
-│       ├── lineups/route.ts        ← ESPN team rosters (free, no auth)
-│       └── analyze/route.ts        ← AI analysis (Gemini/Claude)
-├── components/
-│   ├── Calculator.tsx          ← Orchestrator: batch/single mode, state, math
-│   ├── PlayerForm.tsx          ← Manual input form (controlled, validated)
-│   ├── ResultsDisplay.tsx      ← Single player results
-│   ├── GameSelector.tsx        ← Game selection (auto-fetches games)
-│   ├── BatchResultsTable.tsx   ← Sortable batch results table
-│   ├── PasteInput.tsx          ← DFS text paste with live preview
-│   ├── AIAnalysisPanel.tsx     ← AI analysis UI (provider select + BYO key)
-│   ├── TierBadge.tsx           ← Colored pill for HIGH/MEDIUM/LOW/REJECT
-│   └── types.ts                ← Shared TypeScript interfaces
-└── lib/
-    ├── math.ts                 ← Pure math engine (DO NOT modify without tests)
-    ├── oddsApi.ts              ← Odds API types + transforms
-    ├── playerStats.ts          ← Player stats client + cached fetch
-    ├── playerStatsBlend.ts     ← Pure-math postseason blend (regular/playoffs/finals)
-    ├── batchProcessor.ts       ← Batch calculation engine + postseason Kelly reduction
-    ├── parsers.ts              ← DFS text paste parser
-    ├── aiAnalysis.ts           ← AI orchestrator (Gemini + Claude + Season Phase)
-    ├── promptVersions.ts       ← Supabase prompt versioning
-    └── supabase.ts             ← Supabase client singleton
+## Context discipline (avoid the "prompt too long" error)
+Static context (this file, MEMORY.md) is small. The bloat comes from
+accumulated tool results during a session. Apply these rules:
+- **Don't `Read` whole files just to "get oriented".** Wait until you need them.
+- **Use `Grep`/`Glob` first.** Only `Read` the matched range.
+- **For large files, use `offset`/`limit`** to grab the relevant slice.
+- **Don't re-read** files already shown earlier in the conversation.
+- **Prefer `files_with_matches` mode** over `content` for scanning — pull content only after narrowing the file list.
+- **Architecture, file paths, and the component tree** are derivable from the codebase. Don't memorize them — `Glob` when needed.
+- **For multi-file exploration or deep research, delegate to the `Explore` subagent** (`Agent` tool, `subagent_type=Explore`). Subagents run in their own context — only their summary returns to the main session, so their read history never bloats yours. This is the structural fix for "I had to read 30 files to answer one question."
 
-__tests__/
-├── math.test.ts                ← Math engine tests (CV / Binomial / NegBinomial / fantasy)
-├── PlayerForm.test.tsx         ← Form input + validation tests
-├── Calculator.test.tsx         ← Calculator pipeline + integration tests
-├── oddsApi.test.ts             ← Odds API transform + cross-reference tests
-├── playerStats.test.ts         ← Position mapping + PlayerSeasonAvg shape tests
-├── playerStatsBlend.test.ts    ← Pure-math blend tests (39 — postseason weights, blending)
-├── batchProcessor.test.ts      ← Batch processing + postseason Kelly reduction tests
-├── GameSelector.test.tsx       ← Game selector UI tests
-├── BatchResultsTable.test.tsx  ← Sortable results table tests
-├── parsers.test.ts             ← DFS text parser tests (incl. combo/fantasy)
-└── aiAnalysis.test.ts          ← AI message build + JSON parse + Season Phase tests
+## Pre-commit self-review (enforced by hook)
+Every `git commit` Bash call is intercepted by
+`.claude/hooks/pre-commit-review.mjs` and **blocked** unless the commit
+message body contains the marker:
+
+```
+Reviewed-by: claude-self-review
 ```
 
-## Math Pipeline (executed in Calculator.tsx)
-```
-devigProbit(overOdds, underOdds)         → fair probabilities
-modelCountingStat/modelPoints(mean,line) → model probabilities
-blendProbabilities(model, fair, 0.6)     → 60/40 blend
-applyModifiers(blended, modifiers)       → adjusted for pace/injury
-kellyStake(adjusted, odds, bankroll)     → stake + EV
-assignTier({ prob, ev, flags })          → HIGH/MEDIUM/LOW/REJECT
-```
+When the hook fires:
+1. Run the `/simplify` skill on the staged changes (reviews for sloppy
+   code, dead branches, over-engineering, premature abstraction).
+2. Address anything it finds.
+3. Retry the commit with the marker added to the message body, e.g.:
+   ```
+   git commit -m "$(cat <<'EOF'
+   fix: handle null player stats
 
-## Postseason Pipeline (NBA Playoffs / Finals)
-```
-/api/player-stats fetches three slices in parallel:
-  Regular season (mandatory)  →  pbpstats SeasonType=Regular+Season
-  Playoffs ex Finals (best-effort)  →  SeasonType=Playoffs&DateTo=<finals_start - 1>
-  Finals (best-effort)  →  SeasonType=Playoffs&DateFrom=<finals_start>
+   Reviewed-by: claude-self-review
+   EOF
+   )"
+   ```
 
-playerStatsBlend.ts (pure functions, fully unit-tested):
-  computePlayoffsWeight(games)        → linear ramp, 2.5pp/game, cap 35%
-  computeFinalsWeight(games)          → linear ramp, 8pp/game, cap 40%
-  computeBlendWeights(p, f)           → {regular, playoffs, finals} sums to 1
-  blendStats(slices, weights)         → weighted per-game averages
-  determineSeasonType(slices)         → 'regular' | 'playoffs' | 'finals'
-  determineSlateSeasonType(types)     → slate-level promotion (finals > playoffs > regular)
+Never add the marker without actually running the review — it is a
+*promise* that you ran it, not a bypass token.
 
-batchProcessor.ts:
-  applyPostseasonKellyReduction(result, seasonType)  → 0.75x stake when postseason
+## Session continuity (`.claude/WIP.md`)
+A SessionStart hook (`.claude/hooks/load-wip.mjs`) auto-injects the contents
+of `.claude/WIP.md` into every new session, so work resumes cleanly after
+`/clear`. **Maintain it.** Update `.claude/WIP.md` at natural milestones —
+after a task completes, before long pauses, when switching context, or when
+the user says "save where we are." Keep it brief and actionable: what we're
+doing, status checklist, next concrete action, open questions, dated. The
+file itself shows the format. Always verify the snapshot against `git status`
+and recent commits before continuing — it may be stale if work happened
+outside Claude Code.
 
-aiAnalysis.ts:
-  getSlateSeasonType(batchResult)     → reads BatchResult.players[*].seasonType
-  buildUserMessage()                   → emits "Season Phase: <type>" header line
-                                          + Postseason Context banner when not regular
-```
+## Environment Variables
+The full list lives in `.env.local.example`. Read that file when you need
+it instead of duplicating it here. Server-only keys must never be prefixed
+with `NEXT_PUBLIC_`.
 
-The Algorithmic Prompt V2 (`prompts/algorithmic-prompt-v2.txt`) adds:
-  - Section 0.3a — Postseason Context Protocol (rotation, pace, defensive intensity)
-  - Section 1.5a — Postseason Kelly Note (0.75x already applied — don't double-apply)
-  - Section 6.1a — Postseason Confidence Tier Modifiers (+2pp playoff, +4pp Finals)
+## Deploy / Supabase setup
+Full procedural runbook lives in `DEPLOY.md` (pre-flight, migrations,
+cron secret, Vercel setup, smoke tests, rollback). Read it on demand.
+The post-deploy security checklist lives in
+`SECURITY_DEPLOYMENT_CHECKLIST.md`.
 
-## Environment Variables (.env.local)
-```
-ODDS_API_KEY=your_key_here
-BALLDONTLIE_API_KEY=your_key_here
-GEMINI_API_KEY=your_key_here              # Free at https://aistudio.google.com
-CLAUDE_API_KEY=your_key_here              # Optional, BYO-key also supported
-NEXT_PUBLIC_SUPABASE_URL=your_url
-NEXT_PUBLIC_SUPABASE_ANON_KEY=your_key
-
-# Optional — overrides the YYYY-06-04 default for the regular-playoffs/finals split.
-# Update this each year once the official Game-1 date is announced.
-# NBA_FINALS_START_DATE=2026-06-04
-```
-
-## Supabase Setup (first time)
-1. Run `supabase/schema.sql` in the Supabase SQL editor
-2. Run `node scripts/seed-prompt.mjs` to seed Algorithmic Prompts V1 + V2
-   (script is idempotent — safe to re-run; promotes V2 to active and
-   archives V1 so the postseason rules apply automatically)
-3. Done — the app now persists all AI analyses and picks
-
-## Updating the active prompt
-When you edit `prompts/algorithmic-prompt-v2.txt` in place (e.g. tweaking
-the fantasy scoring formula), the changes stay on disk until you push them
-into Supabase. Re-run the seed script with the force flag:
-```
-node scripts/seed-prompt.mjs --force-update
-```
-Without the flag the script detects drift and prints a warning but leaves
-the DB row untouched, so accidental edits can't clobber your active prompt.
-
-## Deployment (Vercel)
-1. Push to GitHub
-2. Connect repo in Vercel dashboard
-3. Add all environment variables from above
-4. Deploy — Vercel auto-detects Next.js
-
-## MCP Servers (recommended)
-- **Context7** — Live framework docs (Next.js, React, Tailwind)
-- **Chrome DevTools** — Browser debugging and visual verification
+## Security model — quick gotchas
+Full inventory in `SECURITY.md` and `SECURITY_WORK_LOG.md`. Never violate:
+- **Never** import `aiAnalysis.ts`, `promptVersions.ts`, `supabaseAdmin.ts`,
+  `cronAuth.ts`, or `schemas.ts` from a Client Component. They're
+  `import 'server-only'` and the build will fail. Use `aiTypes.ts` for
+  client-safe shared types.
+- **All** API route bodies use Zod validators from `src/lib/schemas.ts`.
+  New route → new schema.
+- **BYO API keys** live in `sessionStorage` (tab-scoped). Don't revert to
+  `localStorage`.
+- **Error responses** must use `internalError(err, scope)` from
+  `apiErrors.ts`. Never `NextResponse.json({ error: err.message })`.
+- **Cron routes** must call `verifyCronAuth(request)` at the top.
+  Never write `if (cronSecret) { ... }` — that's a fail-open bug.

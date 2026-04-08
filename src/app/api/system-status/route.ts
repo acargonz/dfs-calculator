@@ -30,7 +30,8 @@
  */
 
 import { NextResponse } from 'next/server';
-import { getSupabase } from '@/lib/supabase';
+import { getSupabaseAdmin } from '@/lib/supabaseAdmin';
+import { internalError } from '@/lib/apiErrors';
 import { fetchPicks, summarizePicks } from '@/lib/pickHistory';
 import { evaluateRules } from '@/lib/alertEvaluator';
 import { MONITORING_RULES, type SystemStats } from '@/lib/monitoringRules';
@@ -40,7 +41,7 @@ const DEFAULT_BANKROLL = 100;
 const BASELINE_PICK_COUNT = 50;
 
 export async function GET() {
-  const supabase = getSupabase();
+  const supabase = getSupabaseAdmin();
 
   if (!supabase) {
     // Empty payload for dev / unconfigured environments
@@ -113,10 +114,6 @@ export async function GET() {
       },
     });
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Unknown error';
-    return NextResponse.json(
-      { error: `Failed to fetch system status: ${message}` },
-      { status: 500 },
-    );
+    return internalError(err, 'system-status');
   }
 }

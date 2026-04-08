@@ -45,7 +45,9 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { getSupabase } from '@/lib/supabase';
+import { getSupabaseAdmin } from '@/lib/supabaseAdmin';
+import { verifyCronAuth } from '@/lib/cronAuth';
+import { misconfigured, internalError } from '@/lib/apiErrors';
 import { resolvePick } from '@/lib/pickResolver';
 import {
   flattenGameSummary,
@@ -160,21 +162,14 @@ export async function GET(request: NextRequest) {
   const start = Date.now();
   const errors: string[] = [];
 
-  // Auth — mirror snapshot route pattern
-  const cronSecret = process.env.CRON_SECRET;
-  if (cronSecret) {
-    const auth = request.headers.get('authorization');
-    if (auth !== `Bearer ${cronSecret}`) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
-  }
+  // Auth — fail-CLOSED cron Bearer check. Fixes security finding C4
+  // (previous inline check was fail-open when CRON_SECRET was unset).
+  const authFailure = verifyCronAuth(request);
+  if (authFailure) return authFailure;
 
-  const supabase = getSupabase();
+  const supabase = getSupabaseAdmin();
   if (!supabase) {
-    return NextResponse.json(
-      { error: 'Supabase not configured' },
-      { status: 500 },
-    );
+    return misconfigured('Supabase admin client not configured');
   }
 
   // 1. Fetch all unresolved picks in the backfill window
@@ -195,10 +190,7 @@ export async function GET(request: NextRequest) {
     .lt('date', today);
 
   if (pickErr) {
-    return NextResponse.json(
-      { error: `Failed to fetch pending picks: ${pickErr.message}` },
-      { status: 500 },
-    );
+    return internalError(pickErr, 'resolve-picks: fetch pending');
   }
 
   const pendingPicks = (rawPicks ?? []).map((p) => ({

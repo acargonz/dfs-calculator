@@ -2,8 +2,11 @@
 
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import type { BatchResult } from '../lib/batchProcessor';
-import type { AIProvider, ModelInfo } from '../lib/aiAnalysis';
-import { MODEL_CATALOG } from '../lib/aiAnalysis';
+// Import the client-safe types + catalog from aiTypes (not aiAnalysis).
+// aiAnalysis.ts is marked `import 'server-only'` and must never end up in
+// the client bundle — it reads provider API keys from process.env.
+import type { AIProvider, ModelInfo } from '../lib/aiTypes';
+import { MODEL_CATALOG } from '../lib/aiTypes';
 import type {
   ConsensusLabel,
   ConsensusSummary,
@@ -261,12 +264,23 @@ export default function AIAnalysisPanel({ batchResult, bankroll }: AIAnalysisPan
   // null = no countdown active, button is freely clickable.
   const [retryCountdownSec, setRetryCountdownSec] = useState<number | null>(null);
 
-  // Load saved keys from localStorage
+  // Load saved keys from sessionStorage (not localStorage).
+  //
+  // Why sessionStorage? BYO API keys (Anthropic, OpenRouter, etc.) are
+  // high-value secrets. If an XSS vulnerability ever slipped into the app,
+  // a persistent store like localStorage would let the attacker lift every
+  // key ever entered on the device, even from sessions the user thought
+  // were long closed. sessionStorage is scoped to the current tab and
+  // wiped on close, so at worst an XSS can only exfiltrate keys for the
+  // active tab — not everything the user has ever pasted. Anthropic's
+  // API-key best-practices doc explicitly calls out "never persist beyond
+  // the minimum required" as mitigation for exactly this class of risk.
   useEffect(() => {
+    if (typeof window === 'undefined') return;
     setProviders((prev) =>
       prev.map((p) => ({
         ...p,
-        apiKey: localStorage.getItem(`dfs-${p.provider}-key`) || '',
+        apiKey: sessionStorage.getItem(`dfs-${p.provider}-key`) || '',
       })),
     );
   }, []);
@@ -292,9 +306,11 @@ export default function AIAnalysisPanel({ batchResult, bankroll }: AIAnalysisPan
       copy[idx] = next;
       return copy;
     });
-    // Persist API key changes
-    if (next.apiKey) localStorage.setItem(`dfs-${next.provider}-key`, next.apiKey);
-    else localStorage.removeItem(`dfs-${next.provider}-key`);
+    // Persist API key changes to sessionStorage (tab-scoped, non-persistent).
+    // See the load-effect above for why we deliberately avoid localStorage.
+    if (typeof window === 'undefined') return;
+    if (next.apiKey) sessionStorage.setItem(`dfs-${next.provider}-key`, next.apiKey);
+    else sessionStorage.removeItem(`dfs-${next.provider}-key`);
   }
 
   function toggleExpand(key: string) {

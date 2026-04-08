@@ -1,0 +1,175 @@
+# ==============================================================================
+# CI — test, audit, and dependency review on every push + PR
+# ==============================================================================
+#
+# What this runs on every push / PR:
+#   1. `npm ci`             — reproducible install from package-lock.json
+#   2. `npm test`           — full Jest suite
+#   3. `npm run build`      — Next.js production build (catches type errors)
+#   4. `npm audit`          — OSS vulnerability scan (fails on high/critical)
+#   5. dependency-review    — PR-only, blocks any PR that introduces a
+#                             dependency with a known vulnerability or an
+#                             incompatible license
+#
+# Why audit + dependency-review + Dependabot?
+#   They cover different windows:
+#     - Dependabot: opens PRs when new vulnerable versions land in the
+#       lockfile for dependencies we already use.
+#     - dependency-review: blocks PRs that ADD new vulnerable dependencies
+#       (so an attacker-controlled PR can't sneak in `event-stream@3.3.6`).
+#     - npm audit: re-verifies the current lockfile on every run so we catch
+#       advisories that land between Dependabot scans.
+#
+# Security hardening on the workflow itself:
+#   - `permissions: contents: read` — least-privilege GITHUB_TOKEN. Without
+#     this, the token defaults to read-write on every scope, which is an
+#     entire OWASP CI/CD top 10 category (CICD-SEC-1 Insufficient Flow
+#     Control) on its own.
+#   - All actions are pinned to the official `@vN` major tags published by
+#     GitHub/actions. (Dependabot will open PRs to bump them to full SHA
+#     pins if you want tighter supply-chain control — see dependabot.yml.)
+#   - `pull_request_target` is NOT used. We use `pull_request`, which runs
+#     in a fork-scoped context with no secrets — this prevents the
+#     pwn-request vulnerability where a fork PR gains write access to the
+#     base repo via pull_request_target + actions/checkout@v4.
+# ==============================================================================
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Least-privilege default. Individual jobs below opt-in to wider scopes if
+# they actually need them (dependency-review needs `pull-requests: write`
+# to post its review comment, for example).
+permissions:
+  contents: read
+
+concurrency:
+  # Cancel in-progress runs for the same ref — saves CI minutes when the
+  # user pushes multiple commits in quick succession.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Build + test on the Node version Vercel uses in production
+  # ---------------------------------------------------------------------------
+  test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [20.x]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Shallow clone — we don't need history for tests / build.
+          fetch-depth: 1
+          # Don't persist the GITHUB_TOKEN in .git/config — reduces blast
+          # radius if a build step is compromised.
+          persist-credentials: false
+
+      - name: Setup Node ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        # `npm ci` is preferred over `npm install` in CI: it refuses to
+        # modify package-lock.json, so any drift between lockfile and
+        # package.json fails the build instead of silently resolving.
+        run: npm ci --no-audit --no-fund
+
+      - name: Run Jest test suite
+        run: npm test -- --ci --reporters=default
+        env:
+          CI: 'true'
+
+      - name: Production build
+        run: npm run build
+        env:
+          # Dummy env vars so next build doesn't bail out on missing keys.
+          # Real values live in Vercel's encrypted env store.
+          ODDS_API_KEY: 'ci-dummy-key'
+          BALLDONTLIE_API_KEY: 'ci-dummy-key'
+          GEMINI_API_KEY: 'AIza_ci_dummy_key_for_build_only_xxxxxxx'
+          CLAUDE_API_KEY: 'sk-ant-api03-ci-dummy-key-for-build-only-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
+          SUPABASE_URL: 'https://ci-dummy.supabase.co'
+          SUPABASE_SERVICE_ROLE_KEY: 'ci-dummy-service-role-key'
+          NEXT_PUBLIC_SITE_URL: 'https://dfs-calculator.example.com'
+          CRON_SECRET: 'ci-dummy-cron-secret'
+
+  # ---------------------------------------------------------------------------
+  # Dependency vulnerability audit — runs on every push AND PR
+  # ---------------------------------------------------------------------------
+  audit:
+    name: npm audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Run npm audit (high + critical fail the build)
+        # --audit-level=high blocks the build on any HIGH or CRITICAL
+        # advisory. Moderate and low are reported by `npm audit` locally /
+        # in Dependabot but don't block CI — the review cost isn't worth
+        # it for a pre-production project.
+        run: npm audit --audit-level=high
+
+  # ---------------------------------------------------------------------------
+  # Dependency Review — PR-only, blocks PRs that add vulnerable dependencies
+  # ---------------------------------------------------------------------------
+  dependency-review:
+    name: Dependency Review
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 5
+
+    permissions:
+      contents: read
+      # Needed so the action can post its summary comment on the PR
+      pull-requests: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Review dependency diff
+        uses: actions/dependency-review-action@v4
+        with:
+          # Fail the PR on any HIGH or CRITICAL vulnerability introduced
+          # by a new/updated dependency. Moderate and low are surfaced in
+          # the PR summary but don't block merge.
+          fail-on-severity: high
+          # Reject dependencies with these license types — they'd force
+          # this repo to become GPL, which we don't want for a prop-betting
+          # calculator.
+          deny-licenses: GPL-2.0, GPL-3.0, AGPL-3.0
+          comment-summary-in-pr: on-failure

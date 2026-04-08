@@ -1,0 +1,157 @@
+# ==============================================================================
+# gitleaks config — secret scanning for DFS Calculator
+# ==============================================================================
+#
+# Why this file exists
+# --------------------
+# Gitleaks (https://github.com/gitleaks/gitleaks) scans every staged diff
+# (and, optionally, every commit in history) for strings that look like API
+# keys, service role tokens, and other secrets. This project handles:
+#
+#   - The Odds API key (sports prop lines)
+#   - PBP Stats key (player season averages)
+#   - Google Gemini API key (AI analysis)
+#   - Anthropic Claude API key (AI analysis)
+#   - OpenRouter API key (AI analysis)
+#   - Supabase service_role key (bypasses RLS on the entire database)
+#   - A CRON_SECRET used to authenticate the Vercel cron jobs
+#
+# Any of those leaking into a public git repo would be catastrophic — the
+# service_role key in particular would let anyone on the internet wipe the
+# picks and analyses tables. Even a short window of exposure between commit
+# and rotation is enough to get scraped by GitHub's constant secret-hunting
+# bots. (Supabase themselves document this pattern and have shipped
+# automatic key rotation for exactly this reason.)
+#
+# How to use
+# ----------
+#   1. Local pre-commit hook (recommended):
+#      - Install gitleaks: https://github.com/gitleaks/gitleaks#installing
+#      - Install pre-commit: pip install pre-commit
+#      - Add `.pre-commit-config.yaml` if you want auto-run on commit.
+#      - OR just run manually: `gitleaks protect --staged --verbose`.
+#
+#   2. CI scan (optional, not yet wired into ci.yml):
+#      - Add a job that runs `gitleaks detect --source . --verbose`.
+#
+#   3. Pre-push audit of entire history (before going public):
+#      - `gitleaks detect --source . --log-opts="--all"`.
+#
+# This config extends the default gitleaks ruleset with project-specific
+# patterns (our Supabase project ref, our Vercel cron path) that the
+# default ruleset doesn't cover, and adds explicit allowlists for places
+# where a pattern match is a false positive (test fixtures, example files).
+# ==============================================================================
+
+# Pull in every rule from the shipped default config. This gives us
+# coverage for AWS, GCP, Azure, GitHub, OpenAI, Stripe, generic
+# entropy-based detection, etc. without restating them here.
+[extend]
+useDefault = true
+
+# ---------------------------------------------------------------------------
+# Project-specific rules — patterns the default ruleset doesn't cover
+# ---------------------------------------------------------------------------
+
+[[rules]]
+id = "supabase-service-role-key"
+description = "Supabase service_role JWT (bypasses RLS)"
+# Supabase service_role keys are 3-segment JWTs. The header always starts
+# with eyJ because the JSON `{"alg":"HS256","typ":"JWT"}` encodes to that
+# prefix in base64url. We also require a minimum overall length to cut
+# down on false positives from other JWT-looking strings.
+regex = '''eyJ[A-Za-z0-9_-]{20,}\.eyJ[A-Za-z0-9_-]{50,}\.[A-Za-z0-9_-]{30,}'''
+tags = ["supabase", "jwt", "critical"]
+keywords = [
+  "service_role",
+  "SUPABASE_SERVICE_ROLE_KEY",
+  "supabase.co",
+]
+
+[[rules]]
+id = "anthropic-api-key"
+description = "Anthropic (Claude) API key"
+# Anthropic documents their key format as `sk-ant-api<NN>-...` where the
+# trailing section is at least 40 URL-safe chars. We match that shape so
+# that generic "sk-" rules don't swallow Stripe test keys and vice versa.
+regex = '''sk-ant-api\d{2}-[A-Za-z0-9_-]{40,}'''
+tags = ["anthropic", "llm", "critical"]
+keywords = ["sk-ant-api", "ANTHROPIC_API_KEY", "CLAUDE_API_KEY"]
+
+[[rules]]
+id = "openrouter-api-key"
+description = "OpenRouter API key"
+# OpenRouter uses `sk-or-v<N>-<64+ hex chars>`. See
+# https://openrouter.ai/docs/api-reference/authentication
+regex = '''sk-or-v\d+-[A-Za-z0-9]{48,}'''
+tags = ["openrouter", "llm", "critical"]
+keywords = ["sk-or-v1", "OPENROUTER_API_KEY"]
+
+[[rules]]
+id = "gemini-api-key"
+description = "Google Gemini / AI Studio API key"
+# Gemini / AI Studio keys all start with `AIza` followed by 35 URL-safe
+# chars. This matches Google's broader GCP key format — the default
+# ruleset already has a google-api-key rule but it's tuned for GCP
+# service account JSON blobs, not bare keys in a .env file.
+regex = '''AIza[A-Za-z0-9_-]{35}'''
+tags = ["google", "gemini", "llm", "critical"]
+keywords = ["AIza", "GEMINI_API_KEY"]
+
+[[rules]]
+id = "odds-api-key"
+description = "The Odds API key"
+# The Odds API issues 32-char hex keys — they look like random hex blobs,
+# so the safest way to catch them is to require proximity to the env var
+# name. Gitleaks evaluates `regex` AGAINST the matched keyword window when
+# both are set, which dramatically cuts false positives.
+regex = '''[a-f0-9]{32}'''
+tags = ["odds-api", "medium"]
+keywords = ["ODDS_API_KEY", "the-odds-api"]
+
+# ---------------------------------------------------------------------------
+# Allowlists — places where a pattern match is a known false positive
+# ---------------------------------------------------------------------------
+
+[allowlist]
+description = "Test fixtures, example env files, docs"
+# Don't scan these paths — they're expected to contain fake-looking
+# credential strings for tests / docs / examples.
+paths = [
+  # .env.local.example holds placeholder values, not real keys
+  '''(^|/)\.env\.local\.example$''',
+  # __tests__ directories may contain deliberately-fake keys in fixtures
+  '''(^|/)__tests__/''',
+  '''(^|/)__mocks__/''',
+  # Documentation and prompt files sometimes include example keys/strings
+  '''(^|/)prompts/''',
+  '''(^|/)docs/''',
+  '''\.md$''',
+  # Our CI workflow has dummy values for the build step
+  '''(^|/)\.github/workflows/''',
+  # Gitleaks config itself contains regex patterns that look like keys
+  '''(^|/)\.gitleaks\.toml$''',
+]
+
+# Specific dummy values we know are safe (used by CI and examples).
+# stopwords match the LITERAL characters, not regex — this is a blunt
+# instrument for whitelisting a string you're certain is not a real secret.
+stopwords = [
+  "ci-dummy-key",
+  "ci-dummy-service-role-key",
+  "ci-dummy-cron-secret",
+  "your_key_here",
+  "your_odds_api_key_here",
+  "your_balldontlie_key_here",
+  "your_gemini_key_here",
+  "your_claude_key_here",
+]
+
+# Known-safe regexes that we deliberately don't want to flag. Each entry
+# here is a pattern that the default rules would otherwise catch but that
+# we've verified is a false positive for this repo.
+regexes = [
+  # Example placeholder used in schemas.ts regex definitions / JSDoc
+  '''sk-ant-api\d{2}-\[A-Za-z0-9_-\]\{40,\}''',
+  '''AIza\[A-Za-z0-9_-\]\{30,\}''',
+]

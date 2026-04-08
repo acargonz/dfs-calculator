@@ -230,22 +230,52 @@ platform grants a bonus. Double-double / triple-double bonuses do NOT apply.
 
 ## Environment Variables
 ```
+# --- Provider API keys (server-side only) ---
 ODDS_API_KEY=your_key_here              # The Odds API (https://the-odds-api.com)
 BALLDONTLIE_API_KEY=your_key_here       # balldontlie.io (position lookups only)
 GEMINI_API_KEY=your_key_here            # Google AI Studio — free tier 15 RPM / 1M tokens/day
 CLAUDE_API_KEY=your_key_here            # (optional) Anthropic API for premium analysis
-NEXT_PUBLIC_SUPABASE_URL=your_url       # Supabase project URL (client-safe)
-NEXT_PUBLIC_SUPABASE_ANON_KEY=your_key  # Supabase anon key (client-safe, RLS enforced)
+OPENROUTER_API_KEY=your_key_here        # (optional) OpenRouter free-tier models
+
+# --- Supabase (server-side service_role — replaces anon key flow) ---
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=eyJ...        # Bypasses RLS; server-only via supabaseAdmin.ts
+
+# --- Security controls ---
+NEXT_PUBLIC_SITE_URL=https://dfs-calculator.vercel.app  # Origin allowlist anchor
+ALLOWED_ORIGINS=                                        # Comma-separated extra origins
+CRON_SECRET=                                            # Shared secret for Vercel cron
 ```
 ESPN endpoints (`/api/injuries`, `/api/lineups`) require no key. PBP Stats also
 has no auth and no rate limit documented.
+
+The old `NEXT_PUBLIC_SUPABASE_*` anon-key flow was **removed** as part of
+the security audit — those vars are no longer used and should be deleted
+from production. See `SECURITY_WORK_LOG.md` for the full context.
+
+## Security
+See `SECURITY.md` for the vulnerability disclosure policy. See
+`SECURITY_DEPLOYMENT_CHECKLIST.md` for the external-action items required
+after deploying (GCP billing cap, Vercel WAF rule, Supabase migration
+`003_enable_rls.sql` apply, GitHub Push Protection, API key rotation).
+
+Every API route sits behind a Zod schema (`src/lib/schemas.ts`), an
+Origin/Referer allowlist (`src/lib/originCheck.ts`), and error redaction
+(`src/lib/redact.ts` + `src/lib/apiErrors.ts`). Cron routes additionally
+require a constant-time Bearer check (`src/lib/cronAuth.ts`). The Supabase
+service_role key lives only in `src/lib/supabaseAdmin.ts` and is guarded
+by `import 'server-only'` so it can never leak into the client bundle.
 
 ## Deployment
 This app is designed for Vercel deployment:
 1. Push to GitHub
 2. Connect repo in Vercel dashboard
-3. Set environment variables (ODDS_API_KEY, BALLDONTLIE_API_KEY)
+3. Set environment variables from the block above
 4. Deploy — Vercel auto-detects Next.js
+5. **Run through `SECURITY_DEPLOYMENT_CHECKLIST.md`** before serving
+   production traffic. Source-level fixes are landed but the external
+   controls (GCP billing cap, Vercel WAF, Supabase RLS migration, GitHub
+   Push Protection, key rotation) still need your manual action.
 
 ## Known Constraints
 - CV table is NBA-specific. Other sports would need different calibration.

@@ -1,3 +1,6 @@
+// Server-only — touches Supabase via the service role key.
+import 'server-only';
+
 /**
  * Prompt version management.
  *
@@ -7,7 +10,8 @@
  * on disk and are seeded into Supabase via `scripts/seed-prompt.mjs`.
  */
 
-import { getSupabase, type PromptVersion } from './supabase';
+import { getSupabaseAdmin } from './supabaseAdmin';
+import type { PromptVersion } from './supabase';
 
 // Minimal inline fallback used only when Supabase is unreachable. The real
 // production content is the file on disk that gets seeded into the
@@ -15,7 +19,7 @@ import { getSupabase, type PromptVersion } from './supabase';
 const FALLBACK_PROMPT_CONTENT = `You are an NBA prop-betting analyst. The calculator has already computed probabilities and EVs for each player prop. Your job is to review each pick, apply context (injuries, matchups, pace), flag issues, and recommend a final tier (A/B/C/REJECT) with brief reasoning.`;
 
 export async function getActivePrompt(): Promise<PromptVersion> {
-  const supabase = getSupabase();
+  const supabase = getSupabaseAdmin();
 
   if (supabase) {
     const { data, error } = await supabase
@@ -45,7 +49,7 @@ export async function getActivePrompt(): Promise<PromptVersion> {
 }
 
 export async function listPromptVersions(): Promise<PromptVersion[]> {
-  const supabase = getSupabase();
+  const supabase = getSupabaseAdmin();
   if (!supabase) return [];
 
   const { data, error } = await supabase

@@ -1,0 +1,97 @@
+# ==============================================================================
+# Scheduled security audit — runs nightly independent of push/PR activity
+# ==============================================================================
+#
+# Why a second "audit" workflow when ci.yml already runs `npm audit` on every
+# push and PR?
+#   The PR-time audit only catches vulnerabilities that exist at the moment
+#   the PR was opened. A dependency you're already using can have a new
+#   advisory published at 3:00 AM UTC, and without a scheduled run you won't
+#   hear about it until the next human pushes a commit — which can be days
+#   away on a quiet personal project.
+#
+#   This workflow closes that gap by re-running the audit every night on the
+#   lockfile as it exists on `main`. If a new advisory lands, the workflow
+#   fails, which:
+#     1. Sends GitHub's default "workflow failed" email to the repo owner.
+#     2. Leaves a red X on the `main` branch in the Actions tab.
+#     3. Is visible in the repo's Security > Code scanning summary.
+#   That's enough to prompt a response without adding a new third-party
+#   notification service.
+#
+# Why not just rely on Dependabot alerts?
+#   Dependabot alerts live in a separate tab that's easy to miss, and they're
+#   opt-in per advisory source. `npm audit` runs against the SAME feed the
+#   Node ecosystem uses, via GitHub's native advisory database, and it fails
+#   the workflow deterministically — which is a louder signal than a silent
+#   alert.
+#
+# Security hardening on the workflow itself:
+#   - permissions: contents: read — least-privilege GITHUB_TOKEN (OWASP
+#     CI/CD Top 10: CICD-SEC-1 Insufficient Flow Control).
+#   - No secrets used. Scheduled workflows in GitHub run against the default
+#     branch, with access to its secrets IF declared — this workflow
+#     declares none, so even if compromised, it can only read code.
+#   - persist-credentials: false — don't leave the GITHUB_TOKEN sitting in
+#     .git/config where a subsequent compromised step could exfiltrate it.
+#   - All actions pinned to `@vN` major tags; Dependabot will open PRs to
+#     bump them to full SHA pins per .github/dependabot.yml.
+# ==============================================================================
+
+name: Scheduled npm audit
+
+on:
+  schedule:
+    # 06:00 UTC every day = 02:00 ET — quiet hours, no CI contention.
+    - cron: '0 6 * * *'
+  # Allow manual trigger from the Actions tab for ad-hoc checks.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scheduled-audit-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: npm audit (scheduled)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: 'npm'
+
+      - name: Install dependencies
+        # `npm ci` — reproducible install from package-lock.json, refuses to
+        # silently modify the lockfile.
+        run: npm ci --no-audit --no-fund
+
+      - name: Run npm audit (high + critical fail the build)
+        # Same threshold as ci.yml so the signal is consistent across PR and
+        # scheduled runs. Moderate/low advisories are still reported by the
+        # audit itself (visible in workflow logs) but don't fail the build —
+        # the review cost isn't worth it for a pre-production project.
+        run: npm audit --audit-level=high
+
+      - name: Print advisory summary on failure
+        if: failure()
+        # Failure diagnostics — dumps the full advisory list so the email
+        # notification contains enough context to triage without clicking
+        # through to the Actions UI. `|| true` prevents the diagnostic step
+        # itself from failing the workflow and masking the real audit exit.
+        run: |
+          echo "::group::Full npm audit report"
+          npm audit --json || true
+          echo "::endgroup::"

@@ -1,0 +1,115 @@
+# ==============================================================================
+# CodeQL — semantic code analysis for JavaScript / TypeScript
+# ==============================================================================
+#
+# What it does
+# ------------
+# CodeQL is GitHub's semantic code analysis engine. Unlike `npm audit` (which
+# scans `package-lock.json` for known-vulnerable dependencies), CodeQL walks
+# the source tree as an AST and finds vulnerability PATTERNS in the code we
+# wrote ourselves:
+#
+#   - SQL / NoSQL injection (string concatenation into DB queries)
+#   - SSRF (user-controlled URLs passed to fetch)
+#   - Path traversal (unvalidated filenames reaching fs.readFile)
+#   - XSS (unsanitized input rendered via dangerouslySetInnerHTML)
+#   - Hardcoded credentials / API keys
+#   - Prototype pollution sinks
+#   - Regex DoS (catastrophic backtracking patterns)
+#
+# These are exactly the classes of bugs that the Zod schemas + sanitizers
+# + originCheck middleware are designed to prevent — but code review can
+# miss a subtle regression, and CodeQL re-verifies the whole tree on every
+# push so drift is caught immediately.
+#
+# Why trust it:
+#   CodeQL is a first-party GitHub product, free for public repos, and the
+#   same engine powers GitHub's own secret-scanning and the default Code
+#   Scanning setup GitHub offers on the Security tab. It's the same engine
+#   Microsoft uses internally to audit the Office + Azure monorepos.
+#
+# Cadence:
+#   - Every push to `main` (catches anything that slips past PR review).
+#   - Every PR (blocks new vulnerabilities from merging).
+#   - Weekly schedule as a belt-and-suspenders catch for new CodeQL queries
+#     that GitHub publishes between our pushes. GitHub releases new queries
+#     roughly monthly, so a weekly run ensures we pick them up within days
+#     of publication rather than waiting for the next PR.
+#
+# Security hardening:
+#   - Top-level `permissions: read-all` — default to read, grant the single
+#     `security-events: write` only on the one job that uploads SARIF.
+#   - No secrets used. CodeQL runs entirely against source.
+#   - `pull_request` trigger (not `pull_request_target`) — forks run in
+#     isolated context with no access to secrets, preventing the pwn-request
+#     vulnerability class.
+# ==============================================================================
+
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly on Mondays at 07:30 UTC — 30 min after Scorecard so the two
+    # don't fight for runner quota, and both land in the same Monday-morning
+    # triage window.
+    - cron: '30 7 * * 1'
+  workflow_dispatch:
+
+permissions: read-all
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    permissions:
+      # Required to upload SARIF results to the Security > Code scanning tab
+      security-events: write
+      # Required to read Actions metadata (e.g. workflow-call chains)
+      actions: read
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # TypeScript is analysed as part of the javascript-typescript pack.
+        # CodeQL auto-detects .ts / .tsx files under the repo root.
+        language: ['javascript-typescript']
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          # `security-extended` turns on the full security query suite
+          # (~300 queries) instead of the default ~100. Adds ~2 minutes
+          # runtime, but catches the long tail of less-common patterns.
+          queries: security-extended
+
+      # For a pure JS/TS repo with no compiled step that CodeQL doesn't
+      # understand, the "auto-build" step is sufficient — it runs
+      # `npm install` and picks up the TypeScript compilation via tsconfig.
+      # If we ever add a custom build step that CodeQL can't auto-detect,
+      # replace this with an explicit `run: npm run build` step.
+      - name: Auto-build
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: '/language:${{ matrix.language }}'

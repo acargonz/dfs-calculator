@@ -1,42 +1,40 @@
 /**
- * Supabase client singleton.
+ * Supabase TYPE definitions (no runtime).
  *
- * Uses the anon key (safe to expose, RLS enforced server-side).
- * If Supabase isn't configured, all helpers return null/empty and the
- * rest of the app still works — database is an enhancement, not a requirement.
+ * This module used to export a `getSupabase()` singleton that built a
+ * Supabase client from `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY`.
+ * That approach had two problems:
+ *
+ *   1. The anon key was shipped into the browser bundle (it has the
+ *      `NEXT_PUBLIC_` prefix), making it retrievable by any attacker who
+ *      opened DevTools. Our RLS policies were wide-open (`using(true)
+ *      with check(true)`), so the anon key + RLS-as-advertised provided
+ *      zero access control — a clean path to delete every pick in the
+ *      database from the browser console.
+ *
+ *   2. Every single caller of `getSupabase()` is actually a server-side
+ *      Route Handler or a server-only library function. No Client
+ *      Component ever needs a Supabase client at runtime — the client
+ *      just fetches our own /api/* endpoints and gets JSON back.
+ *
+ * Resolution (security findings C1, C2, H2, H7):
+ *   - Move the client construction into `supabaseAdmin.ts`, which uses the
+ *     SERVICE ROLE key and is gated behind `import 'server-only'`.
+ *   - Enable real Row Level Security via migration 003 with a default-deny
+ *     policy. The service role client bypasses RLS by design (BYPASSRLS).
+ *   - Keep this file for the TYPE exports only, because both server code
+ *     and client components legitimately need to type function parameters
+ *     and React state as `PickRow` / `SystemAlertRow` / etc.
+ *   - Type-only imports are erased at compile time, so importing from this
+ *     file from a Client Component does NOT pull any runtime into the
+ *     browser bundle.
+ *
+ * All API routes that previously called `getSupabase()` now call
+ * `getSupabaseAdmin()` from `./supabaseAdmin`.
  */
 
-import { createClient, type SupabaseClient } from '@supabase/supabase-js';
-
-let client: SupabaseClient | null = null;
-
-export function getSupabase(): SupabaseClient | null {
-  if (client) return client;
-
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-
-  if (!url || !key) {
-    // Not configured — app works without DB
-    return null;
-  }
-
-  client = createClient(url, key, {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-    },
-  });
-
-  return client;
-}
-
-export function isSupabaseConfigured(): boolean {
-  return !!(process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY);
-}
-
 // ============================================================================
-// Typed row shapes
+// Typed row shapes — safe to import from anywhere (client + server).
 // ============================================================================
 
 export interface PromptVersion {
@@ -117,4 +115,31 @@ export interface SystemAlertRow {
   acknowledged_by: string | null;
   dismissed: boolean;
   auto_action_taken: string | null;
+}
+
+// ============================================================================
+// Legacy runtime exports — kept as thin shims that point at supabaseAdmin so
+// any code we forgot to migrate still compiles. Both are deprecated; new code
+// should import from `./supabaseAdmin` directly.
+// ============================================================================
+
+/**
+ * @deprecated Use `getSupabaseAdmin()` from `./supabaseAdmin` instead.
+ * This shim is kept purely to avoid breaking any in-flight refactors during
+ * the security migration. It will be removed in a follow-up commit.
+ */
+export function getSupabase() {
+  // Import lazily so tree-shaking can drop this on the client side and the
+  // `server-only` import in supabaseAdmin.ts doesn't fire at module load.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { getSupabaseAdmin } = require('./supabaseAdmin') as typeof import('./supabaseAdmin');
+  return getSupabaseAdmin();
+}
+
+/** @deprecated Use `isSupabaseAdminConfigured()` from `./supabaseAdmin`. */
+export function isSupabaseConfigured(): boolean {
+  return !!(
+    (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL) &&
+    process.env.SUPABASE_SERVICE_ROLE_KEY
+  );
 }

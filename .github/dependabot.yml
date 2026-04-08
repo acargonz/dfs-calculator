@@ -1,0 +1,79 @@
+# ==============================================================================
+# Dependabot — automated dependency updates
+# ==============================================================================
+#
+# Why this file exists
+# --------------------
+# Supply-chain attacks account for a growing share of real-world breaches
+# (see the 2024 Verizon DBIR and the OWASP Top 10's A06:2021 "Vulnerable and
+# Outdated Components"). Shipping a web app without an automated dependency
+# update pipeline means you're relying on humans to remember to `npm audit`,
+# which in practice means nobody does. Dependabot closes that gap by opening
+# PRs the moment a new patch, minor, or security advisory lands.
+#
+# This config runs weekly (Mondays 09:00 America/New_York) because the app
+# only has three dependency ecosystems (npm, GitHub Actions, and a single
+# Dockerfile that may or may not exist), and daily PRs would just create
+# notification fatigue for a one-maintainer project.
+#
+# Security updates are ALSO enabled by default in the Dependabot settings
+# for every GitHub repo (see Settings → Code security and analysis), and
+# those PRs are NOT gated by this schedule — they fire immediately when an
+# advisory is published. This file only controls the non-security cadence.
+#
+# Docs: https://docs.github.com/en/code-security/dependabot
+# ==============================================================================
+
+version: 2
+
+updates:
+  # -------- npm (package.json / package-lock.json) --------
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "America/New_York"
+    # Cap the PR queue so Monday morning isn't 40 open PRs. Critical
+    # security advisories are exempt from this limit and fire outside the
+    # weekly cadence regardless.
+    open-pull-requests-limit: 5
+    # Group non-security updates into one PR per ecosystem family to cut
+    # review overhead. Security advisories stay separate so they can ship
+    # without waiting for the group.
+    groups:
+      minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+    labels:
+      - "dependencies"
+      - "npm"
+    commit-message:
+      prefix: "deps"
+      prefix-development: "deps-dev"
+      include: "scope"
+    # Don't auto-bump major versions — they usually need code changes and
+    # should land in a deliberate, tested PR instead of a surprise bump.
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
+
+  # -------- GitHub Actions (.github/workflows/*.yml) --------
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "America/New_York"
+    open-pull-requests-limit: 3
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "ci"
+      include: "scope"

@@ -26,7 +26,9 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { getSupabase } from '@/lib/supabase';
+import { getSupabaseAdmin } from '@/lib/supabaseAdmin';
+import { PicksQuery } from '@/lib/schemas';
+import { badRequest, internalError } from '@/lib/apiErrors';
 import {
   fetchPicks,
   summarizePicks,
@@ -38,9 +40,10 @@ const DEFAULT_LIMIT = 500;
 const DEFAULT_BANKROLL = 100;
 
 export async function GET(request: NextRequest) {
-  const supabase = getSupabase();
+  const supabase = getSupabaseAdmin();
   if (!supabase) {
-    // Dev convenience: return an empty payload instead of 500
+    // Dev convenience: return an empty payload instead of 500 so the
+    // /history page can still render (the UI already handles empty).
     return NextResponse.json({
       picks: [],
       summary: summarizePicks([]),
@@ -48,27 +51,34 @@ export async function GET(request: NextRequest) {
     });
   }
 
+  // Zod-validate the query params. The schema rejects bad dates, weird
+  // tier strings, and nonsense `limit` values before they reach the DB.
   const params = request.nextUrl.searchParams;
+  const parsed = PicksQuery.safeParse({
+    from: params.get('from') ?? undefined,
+    to: params.get('to') ?? undefined,
+    tier: params.get('tier') ?? undefined,
+    resolvedOnly: params.get('resolvedOnly') ?? undefined,
+    limit: params.get('limit') ?? undefined,
+    bankroll: params.get('bankroll') ?? undefined,
+  });
+  if (!parsed.success) {
+    return badRequest(parsed.error.issues[0]?.message ?? 'Invalid query');
+  }
+
   const filters: PickHistoryFilters = {};
-
-  const from = params.get('from');
-  const to = params.get('to');
-  const tier = params.get('tier');
-  const resolvedOnly = params.get('resolvedOnly');
-  const limit = params.get('limit');
-
+  const { from, to, tier, resolvedOnly, limit, bankroll } = parsed.data;
   if (from) filters.fromDate = from;
   if (to) filters.toDate = to;
-  if (tier && ['HIGH', 'MEDIUM', 'LOW', 'REJECT'].includes(tier)) {
-    filters.tier = tier as Tier;
-  }
+  if (tier) filters.tier = tier as Tier;
   if (resolvedOnly === 'true') filters.resolvedOnly = true;
-  filters.limit = limit ? Math.min(parseInt(limit, 10) || DEFAULT_LIMIT, 5000) : DEFAULT_LIMIT;
+  filters.limit = limit
+    ? Math.min(parseInt(limit, 10) || DEFAULT_LIMIT, 5000)
+    : DEFAULT_LIMIT;
 
-  const bankrollRaw = params.get('bankroll');
-  const bankroll = bankrollRaw ? Number(bankrollRaw) : DEFAULT_BANKROLL;
+  const bankrollNum = bankroll ? Number(bankroll) : DEFAULT_BANKROLL;
   const safeBankroll =
-    Number.isFinite(bankroll) && bankroll > 0 ? bankroll : DEFAULT_BANKROLL;
+    Number.isFinite(bankrollNum) && bankrollNum > 0 ? bankrollNum : DEFAULT_BANKROLL;
 
   try {
     const picks = await fetchPicks(supabase, filters);
@@ -79,10 +89,6 @@ export async function GET(request: NextRequest) {
       count: picks.length,
     });
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Unknown error';
-    return NextResponse.json(
-      { error: `Failed to fetch picks: ${message}` },
-      { status: 500 },
-    );
+    return internalError(err, 'picks fetch');
   }
 }

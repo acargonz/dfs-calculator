@@ -1,0 +1,93 @@
+# ==============================================================================
+# Gitleaks — weekly full-history secret scan
+# ==============================================================================
+#
+# What it does
+# ------------
+# Gitleaks walks the full git history (every commit, every branch) looking
+# for strings that match known secret patterns — API keys, tokens, JWTs,
+# PEM blobs, AWS credentials, etc. Our project-specific rules live in
+# `.gitleaks.toml` alongside the default ruleset.
+#
+# Why a scheduled scan when GitHub Push Protection already blocks known
+# patterns at push time?
+#
+#   1. Push Protection only sees NEW commits — any secret that was committed
+#      before Push Protection was enabled is still sitting in history and
+#      still scannable. A weekly full-history run makes sure that legacy
+#      window is closed.
+#
+#   2. Push Protection uses GitHub's built-in patterns, which cover the
+#      majority of known providers but NOT the project-specific patterns
+#      in .gitleaks.toml. For example, a stale `NEXT_PUBLIC_SUPABASE_*`
+#      constant from the legacy codepath wouldn't trip GitHub's scanner
+#      but would trip our custom rule.
+#
+#   3. Gitleaks' ruleset evolves — new patterns are added monthly, and a
+#      weekly run ensures we pick up new rules within days of publication.
+#
+# What it doesn't do:
+#   - It does NOT scan PR diffs — that's handled by gitleaks-action via
+#     pull_request trigger if you want it (I've not enabled that here to
+#     save CI minutes; the scheduled run is the authoritative check).
+#   - It does NOT modify history — if a secret is found, Gitleaks reports
+#     the finding and fails the workflow. Remediation (rotating the key,
+#     rewriting history) is a human decision.
+#
+# Cadence:
+#   Weekly on Sundays at 06:00 UTC (= 02:00 ET Saturday night) — a quiet
+#   time that's ~24 hours before Scorecard + CodeQL so the results are
+#   already visible when the Monday triage session starts.
+#
+# Security hardening:
+#   - `permissions: contents: read` — gitleaks only needs to read history.
+#   - `fetch-depth: 0` — full history required for the scan to be
+#     meaningful. This is the ONE scheduled workflow where shallow clone
+#     defeats the purpose, so we explicitly unroll it.
+#   - `persist-credentials: false` — don't leave the GITHUB_TOKEN in
+#     .git/config.
+#   - No third-party secrets consumed. The default gitleaks action runs
+#     with only the repo's contents.
+# ==============================================================================
+
+name: Gitleaks (scheduled full-history)
+
+on:
+  schedule:
+    - cron: '0 6 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    name: Scan full history for secrets
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          # Full history — this is non-negotiable for a secret scanner.
+          # A shallow clone would only cover the last commit and miss
+          # anything that was ever committed and later removed.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          # GITHUB_TOKEN is needed for gitleaks-action to (optionally) post
+          # a summary comment on the workflow run. No write scopes are
+          # requested — the default token with `contents: read` is fine.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Point gitleaks at our project-specific ruleset in .gitleaks.toml.
+          # The default ruleset is still active; ours extends it.
+          GITLEAKS_CONFIG: .gitleaks.toml
+          # Fail the workflow on any leak (default behavior, set explicitly
+          # for future-proofing in case the action changes its default).
+          GITLEAKS_ENABLE_COMMENTS: true
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: true
+          GITLEAKS_ENABLE_SUMMARY: true

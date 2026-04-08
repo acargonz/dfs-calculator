@@ -1,0 +1,110 @@
+# ==============================================================================
+# OSSF Scorecard — automated best-practice checks for open-source supply chain
+# ==============================================================================
+#
+# What it does
+# ------------
+# Scorecard is an Open Source Security Foundation tool that runs ~18 checks
+# against a repo and scores each on a 0-10 scale. The checks cover the kinds
+# of things you can't easily see in code review but that matter a lot for
+# supply-chain integrity:
+#
+#   - Are CI workflows pinned to full SHAs, not `@v3` tags?
+#   - Is branch protection enabled on `main`?
+#   - Are GITHUB_TOKEN permissions scoped to least-privilege?
+#   - Is Dependabot enabled?
+#   - Is there a SECURITY.md?
+#   - Are secrets scanned via Push Protection?
+#   - Is code reviewed before merge?
+#   - Are binaries checked into the repo?
+#
+# The output:
+#   1. SARIF file uploaded to the GitHub Security tab — one alert per failing
+#      check with remediation advice.
+#   2. A weekly trend line visible in the repo's Security > Code scanning
+#      dashboard.
+#   3. A public Scorecard badge you can add to the README if the repo is
+#      public (`https://api.securityscorecards.dev/projects/...`).
+#
+# Why trust it:
+#   Scorecard is maintained by Google + GitHub + Microsoft under the OSSF
+#   umbrella and is the de-facto baseline for SLSA / npm Trusted Publisher
+#   compliance. The action itself is published by the ossf org directly,
+#   and the SARIF upload uses the first-party github/codeql-action/upload-sarif.
+#
+# Required permissions:
+#   - id-token: write       → OIDC token for Scorecard's Sigstore attestations
+#   - security-events: write → upload SARIF results to the Security tab
+#   - contents: read         → read the repo to analyze it
+#   - actions: read          → enumerate existing workflows for the
+#                              "Token-Permissions" check
+#
+# Nothing else. This workflow cannot modify code, cannot open PRs, cannot
+# push branches.
+#
+# Cadence:
+#   Weekly on Mondays at 07:00 UTC (= 03:00 ET) — lines up with the npm
+#   audit cadence so all the scheduled security signals land in the same
+#   window and triage is a single session.
+# ==============================================================================
+
+name: OSSF Scorecard
+
+on:
+  schedule:
+    - cron: '0 7 * * 1'
+  # Also run on every push to main so README badge stays fresh.
+  push:
+    branches: [main]
+  # Manual trigger for ad-hoc checks.
+  workflow_dispatch:
+
+# Top-level permissions are the MOST restrictive — each job opts into the
+# wider scopes it actually needs. This is the OSSF recommended pattern.
+permissions: read-all
+
+jobs:
+  analysis:
+    name: Scorecard analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    permissions:
+      # Required for Sigstore / OIDC signing of Scorecard results
+      id-token: write
+      # Required to upload the SARIF file to the Security tab
+      security-events: write
+      # Required for the "Token-Permissions" check to enumerate workflow files
+      actions: read
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Scorecard needs history for the "Dangerous-Workflow" and
+          # "Pinned-Dependencies" checks.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Run analysis
+        uses: ossf/scorecard-action@v2
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          # publish_results: true posts to the public Scorecard API so
+          # anyone can pull our score. Set to false if the repo is private
+          # or if you don't want the score publicly indexed.
+          publish_results: true
+
+      - name: Upload artifact (for debugging)
+        uses: actions/upload-artifact@v4
+        with:
+          name: scorecard-results
+          path: results.sarif
+          retention-days: 7
+
+      - name: Upload SARIF to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: results.sarif
