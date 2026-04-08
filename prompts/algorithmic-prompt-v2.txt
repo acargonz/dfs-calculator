@@ -853,6 +853,56 @@ Flag tolerance modifications (postseason):
     is unchanged.
 
 ---
+6.1b — SHADOW EVALUATION TRACKING  *** NEW ***
+---
+
+Purpose: Calibration data collection. Verify that the tier filter in
+Section 6.1 (and 6.1a in postseason) is actually filtering correctly —
+i.e., do props you reject as LOW/REJECT actually lose at the expected
+rates? Without this we cannot prove the filter is doing useful work,
+and we cannot detect drift in the model's tier assignments.
+
+Rule: For every prop you evaluated in the working set (HARD LIMIT 8
+props per session, 6 in postseason — see Section 6.0) that you did
+NOT include in the betting recommendations, emit a corresponding entry
+in the shadow evaluation block. The shadow block is for tracking only.
+
+What the shadow block contains:
+  - Every prop you considered but did NOT recommend as a bet.
+  - Each entry carries: playerName, statType, line, direction (the
+    side you would have backed had it qualified), confidenceTier
+    (your honest A/B/C/REJECT assessment), finalProbability, and
+    finalEV. A one-sentence reasoning field is included ONLY when
+    the shadow entry's tier is HIGH (this should be rare — HIGH-tier
+    props normally appear in the betting recommendations); MEDIUM/
+    LOW/REJECT shadow entries omit reasoning entirely to keep the
+    tracking record lean.
+  - Tier assignments here use the same Section 6.1 / 6.1a thresholds
+    as the betting recommendations. Be honest — assigning a prop
+    REJECT in the shadow block when it would have been MEDIUM
+    defeats the purpose of tracking calibration drift.
+
+What the shadow block does NOT do:
+  - It does NOT count toward the NO-BET DAY threshold (Section 6.0).
+    The 2-pick HIGH/MEDIUM minimum still applies only to the betting
+    recommendations.
+  - It does NOT appear in slip construction (Section 6.4). Slips
+    are built exclusively from the betting recommendations.
+  - It does NOT alter the HARD LIMIT (Section 6.0). Both arrays
+    together describe the same working set of 8 props (6 in
+    postseason). It is NOT a license to evaluate more props.
+  - It does NOT replace the betting recommendations. Your primary
+    job is still to recommend HIGH/MEDIUM picks; shadow tracking
+    is downstream.
+
+Sum invariant:
+  picks.length + shadowEvaluations.length === number of props you
+  actually evaluated this session (≤ 8, or ≤ 6 in postseason).
+
+  If you declared NO-BET DAY (Section 6.0), picks.length === 0 and
+  shadowEvaluations.length === your full working set.
+
+---
 6.2 — PRE-OUTPUT EXECUTION CHECKLIST
 ---
 Run through every item before producing output. Fail = action required.

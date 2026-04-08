@@ -48,10 +48,10 @@ import { AIAnalysisResponseSchema } from './schemas';
 // don't have to change their import paths. The actual definitions live in
 // `./aiTypes` so Client Components can import the types/constants without
 // pulling this server-only file into the client bundle.
-export type { AIProvider, AIPick, AISlip, ModelInfo } from './aiTypes';
+export type { AIProvider, AIPick, AISlip, AIShadowEvaluation, ModelInfo } from './aiTypes';
 export { MODEL_CATALOG, DEFAULT_ENSEMBLE } from './aiTypes';
 
-import type { AIProvider, AIPick, AISlip } from './aiTypes';
+import type { AIProvider, AIPick, AISlip, AIShadowEvaluation } from './aiTypes';
 
 export interface AIAnalysisRequest {
   provider: AIProvider;
@@ -71,6 +71,7 @@ export interface AIAnalysisResponse {
   slips: AISlip[];
   summary: string;
   warnings: string[];
+  shadowEvaluations: AIShadowEvaluation[];
   rawText: string;
   tokensUsed?: number;
   durationMs: number;
@@ -195,6 +196,7 @@ export function buildUserMessage(req: AIAnalysisRequest): string {
   lines.push(`4. Do NOT invent modifiers for missing pace/matchup data. Leave those fields at 0 in the "modifiers" block.`);
   lines.push(`5. A valid analysis can produce picks even with zero injury adjustments. "Insufficient context" is NOT an acceptable excuse to return an empty picks array when the calculator has produced HIGH or MEDIUM tiers.`);
   lines.push(`6. If the calculator returned HIGH/MEDIUM tiers, you MUST return those as picks (with appropriate A/B confidence) unless the injury report contains a direct contradiction.`);
+  lines.push(`7. After listing your picks, ALSO produce a "shadowEvaluations" entry for every prop you considered but did NOT recommend as a bet. See system prompt Section 6.1b. These are for calibration tracking, not betting — be honest about tier assignments. Only include the "reasoning" field on shadow entries with confidenceTier "A"; for "B"/"C"/"REJECT" entries, omit reasoning entirely. picks.length + shadowEvaluations.length must equal the number of props you evaluated this session.`);
   lines.push('');
 
   // Calculator results — BOTH sides exposed so the AI can pick a direction
@@ -278,6 +280,7 @@ export function buildUserMessage(req: AIAnalysisRequest): string {
   lines.push(`- "reasoning" per pick MUST be <= 250 characters.`);
   lines.push(`- "summary" MUST be <= 400 characters (2–4 sentences max).`);
   lines.push(`- "warnings" array MUST contain at most 4 items, each <= 150 characters.`);
+  lines.push(`- "shadowEvaluations" MUST contain every prop you evaluated this session that did NOT make it into "picks". Omit the "reasoning" field entirely except on entries with confidenceTier "A" (where it MUST be <= 150 characters).`);
   lines.push(`- NO markdown fences, NO commentary outside the JSON, NO trailing text.`);
   lines.push(`- If you decide no picks are actionable, return picks: [] with a one-sentence summary explaining why.`);
   lines.push(``);
@@ -314,6 +317,18 @@ export function buildUserMessage(req: AIAnalysisRequest): string {
   lines.push(`    }`);
   lines.push(`  ],`);
   lines.push(`  "summary": "2-4 sentence slate overview",`);
+  lines.push(`  "shadowEvaluations": [`);
+  lines.push(`    {`);
+  lines.push(`      "playerName": "string",`);
+  lines.push(`      "statType": "string",`);
+  lines.push(`      "line": number,`);
+  lines.push(`      "direction": "over"|"under",`);
+  lines.push(`      "confidenceTier": "A"|"B"|"C"|"REJECT",`);
+  lines.push(`      "finalProbability": 0.55,`);
+  lines.push(`      "finalEV": 0.03,`);
+  lines.push(`      "reasoning": "OPTIONAL — include only when confidenceTier is A, <= 150 chars"`);
+  lines.push(`    }`);
+  lines.push(`  ],`);
   lines.push(`  "warnings": ["any concerns about data, variance, etc."]`);
   lines.push(`}`);
   lines.push('```');
@@ -630,6 +645,7 @@ export function parseAIResponse(rawText: string): {
   slips: AISlip[];
   summary: string;
   warnings: string[];
+  shadowEvaluations: AIShadowEvaluation[];
 } {
   // Build a "from-first-brace" version of the raw text to preserve the tail
   // for truncation recovery. extractJsonFromText can chop the tail at
@@ -661,17 +677,19 @@ export function parseAIResponse(rawText: string): {
       } catch {
         // 4. Mid-response corruption fallback: salvage individually-parseable
         //    pick objects. This is the LAST resort because it drops the
-        //    summary/slips/warnings fields (we only get picks). Better than
-        //    losing the entire analysis to a single bad pick object.
+        //    summary/slips/warnings/shadowEvaluations fields (we only get
+        //    picks). Better than losing the entire analysis to a single bad
+        //    pick object.
         const salvagedPicks = salvagePicksFromMalformed(fromFirstBrace);
         if (salvagedPicks && salvagedPicks.length > 0) {
           return {
             picks: salvagedPicks.map(normalizeAIPick),
             slips: [],
-            summary: `Partial recovery: salvaged ${salvagedPicks.length} pick(s) from malformed JSON. Slips/summary lost to mid-response corruption.`,
+            summary: `Partial recovery: salvaged ${salvagedPicks.length} pick(s) from malformed JSON. Slips/summary/shadow-eval tracking lost to mid-response corruption.`,
             warnings: [
               'AI response had mid-response JSON corruption; partial recovery via salvagePicksFromMalformed.',
             ],
+            shadowEvaluations: [],
           };
         }
         throw new Error(
@@ -702,10 +720,14 @@ export function parseAIResponse(rawText: string): {
       slips: zodResult.data.slips as AISlip[],
       summary: zodResult.data.summary,
       warnings: zodResult.data.warnings,
+      shadowEvaluations: zodResult.data.shadowEvaluations as AIShadowEvaluation[],
     };
   }
 
-  // Permissive fallback (logged, but does not throw).
+  // Permissive fallback (logged, but does not throw). Shadow evaluations
+  // are best-effort here — if the structurally-broken response somehow still
+  // carries them, pass them through unvalidated rather than dropping the
+  // calibration data outright. The strict schema path is the preferred route.
   // eslint-disable-next-line no-console
   console.warn(
     '[aiAnalysis] AI response did not match schema; using permissive extraction.',
@@ -718,6 +740,9 @@ export function parseAIResponse(rawText: string): {
     slips: Array.isArray(obj.slips) ? (obj.slips as AISlip[]) : [],
     summary: typeof obj.summary === 'string' ? obj.summary : '',
     warnings: Array.isArray(obj.warnings) ? (obj.warnings as string[]) : [],
+    shadowEvaluations: Array.isArray(obj.shadowEvaluations)
+      ? (obj.shadowEvaluations as AIShadowEvaluation[])
+      : [],
   };
 }
 

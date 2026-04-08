@@ -22,6 +22,7 @@ import {
   PicksQuery,
   AcknowledgeQuery,
   AIPickSchema,
+  AIShadowEvaluationSchema,
   AIAnalysisResponseSchema,
 } from '../src/lib/schemas';
 
@@ -474,6 +475,63 @@ describe('AIPickSchema', () => {
   });
 });
 
+describe('AIShadowEvaluationSchema', () => {
+  const minimalShadow = {
+    playerName: 'Nikola Jokic',
+    statType: 'rebounds',
+    line: 11.5,
+    direction: 'over' as const,
+    confidenceTier: 'C' as const,
+  };
+
+  it('accepts a minimal valid shadow evaluation', () => {
+    expect(AIShadowEvaluationSchema.safeParse(minimalShadow).success).toBe(true);
+  });
+
+  it('accepts an optional reasoning field on tier-A entries', () => {
+    expect(
+      AIShadowEvaluationSchema.safeParse({
+        ...minimalShadow,
+        confidenceTier: 'A',
+        reasoning: 'Pace edge but slate-cap collision — would have qualified.',
+      }).success,
+    ).toBe(true);
+  });
+
+  it('rejects reasoning longer than 150 chars', () => {
+    expect(
+      AIShadowEvaluationSchema.safeParse({
+        ...minimalShadow,
+        reasoning: 'x'.repeat(151),
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects an invalid direction', () => {
+    expect(
+      AIShadowEvaluationSchema.safeParse({ ...minimalShadow, direction: 'sideways' }).success,
+    ).toBe(false);
+  });
+
+  it('rejects an invalid confidenceTier', () => {
+    expect(
+      AIShadowEvaluationSchema.safeParse({ ...minimalShadow, confidenceTier: 'S' }).success,
+    ).toBe(false);
+  });
+
+  it('rejects a finalProbability outside [0, 1]', () => {
+    expect(
+      AIShadowEvaluationSchema.safeParse({ ...minimalShadow, finalProbability: 1.5 }).success,
+    ).toBe(false);
+  });
+
+  it('rejects a finalEV outside [-1, 1]', () => {
+    expect(
+      AIShadowEvaluationSchema.safeParse({ ...minimalShadow, finalEV: 2 }).success,
+    ).toBe(false);
+  });
+});
+
 describe('AIAnalysisResponseSchema', () => {
   it('accepts a valid response with defaults', () => {
     const res = AIAnalysisResponseSchema.safeParse({
@@ -493,7 +551,52 @@ describe('AIAnalysisResponseSchema', () => {
       expect(res.data.slips).toEqual([]);
       expect(res.data.warnings).toEqual([]);
       expect(res.data.summary).toBe('');
+      expect(res.data.shadowEvaluations).toEqual([]);
     }
+  });
+
+  it('accepts a response with shadowEvaluations populated', () => {
+    const res = AIAnalysisResponseSchema.safeParse({
+      picks: [
+        {
+          playerName: 'LeBron James',
+          statType: 'points',
+          line: 24.5,
+          direction: 'over',
+          confidenceTier: 'A',
+          reasoning: 'good',
+        },
+      ],
+      shadowEvaluations: [
+        {
+          playerName: 'Anthony Davis',
+          statType: 'blocks',
+          line: 1.5,
+          direction: 'under',
+          confidenceTier: 'REJECT',
+          finalProbability: 0.42,
+          finalEV: -0.08,
+        },
+      ],
+    });
+    expect(res.success).toBe(true);
+    if (res.success) {
+      expect(res.data.shadowEvaluations).toHaveLength(1);
+      expect(res.data.shadowEvaluations[0].confidenceTier).toBe('REJECT');
+    }
+  });
+
+  it('rejects > 16 shadowEvaluations', () => {
+    const shadowEvaluations = Array.from({ length: 17 }, () => ({
+      playerName: 'A',
+      statType: 'points',
+      line: 1,
+      direction: 'over' as const,
+      confidenceTier: 'C' as const,
+    }));
+    expect(
+      AIAnalysisResponseSchema.safeParse({ picks: [], shadowEvaluations }).success,
+    ).toBe(false);
   });
 
   it('rejects > 200 picks', () => {

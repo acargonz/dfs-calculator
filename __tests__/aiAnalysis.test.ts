@@ -241,7 +241,44 @@ describe('parseAIResponse', () => {
     expect(parsed.picks).toEqual([]);
     expect(parsed.slips).toEqual([]);
     expect(parsed.warnings).toEqual([]);
+    expect(parsed.shadowEvaluations).toEqual([]);
     expect(parsed.summary).toBe('hello');
+  });
+
+  // Regression guard: shadowEvaluations must survive the schema-validation
+  // path. The function previously returned only picks/slips/summary/warnings
+  // and silently dropped this field, which broke downstream calibration
+  // tracking even though the schema accepted the data. If you add another
+  // field to AIAnalysisResponseSchema, add an analogous test here.
+  it('propagates shadowEvaluations from a schema-valid response', () => {
+    const raw = JSON.stringify({
+      picks: [
+        {
+          playerName: 'LeBron James',
+          statType: 'points',
+          line: 24.5,
+          direction: 'over',
+          confidenceTier: 'B',
+          reasoning: 'good',
+        },
+      ],
+      summary: 'one pick + one shadow',
+      shadowEvaluations: [
+        {
+          playerName: 'Anthony Davis',
+          statType: 'blocks',
+          line: 1.5,
+          direction: 'under',
+          confidenceTier: 'REJECT',
+          finalProbability: 0.42,
+          finalEV: -0.08,
+        },
+      ],
+    });
+    const parsed = parseAIResponse(raw);
+    expect(parsed.shadowEvaluations).toHaveLength(1);
+    expect(parsed.shadowEvaluations[0].playerName).toBe('Anthony Davis');
+    expect(parsed.shadowEvaluations[0].confidenceTier).toBe('REJECT');
   });
 
   it('handles markdown-wrapped JSON', () => {

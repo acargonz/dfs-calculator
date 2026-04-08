@@ -36,7 +36,7 @@ interface ProviderConfig {
 
 interface EnsembleResponse {
   ensemble: Array<
-    | { status: 'success'; provider: AIProvider; model: string; response: { picks: unknown[]; slips: unknown[]; summary: string; warnings: string[]; tokensUsed?: number; durationMs: number } }
+    | { status: 'success'; provider: AIProvider; model: string; response: { picks: unknown[]; slips: unknown[]; summary: string; warnings: string[]; shadowEvaluations: unknown[]; tokensUsed?: number; durationMs: number } }
     | { status: 'error'; provider: AIProvider; model: string; error: string }
   >;
   consensus: { merged: MergedPick[]; summary: ConsensusSummary };

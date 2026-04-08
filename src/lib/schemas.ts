@@ -242,6 +242,25 @@ export const AIPickSchema = z
   })
   .passthrough();
 
+// Shadow evaluations: every prop the model considered but did NOT recommend
+// as a bet. Used for calibration tracking — proves the tier filter is doing
+// useful work and surfaces drift. See prompt section 6.1b. Lean by design:
+// no flags, no modifiers, reasoning is optional and only expected on tier "A"
+// shadow entries (which should be rare since A-tier props normally appear in
+// picks).
+export const AIShadowEvaluationSchema = z
+  .object({
+    playerName: z.string().min(1).max(128),
+    statType: z.string().min(1).max(32),
+    line: z.number().finite(),
+    direction: z.enum(['over', 'under']),
+    confidenceTier: z.enum(['A', 'B', 'C', 'REJECT']),
+    finalProbability: z.number().min(0).max(1).optional(),
+    finalEV: z.number().min(-1).max(1).optional(),
+    reasoning: z.string().max(150).optional(),
+  })
+  .passthrough();
+
 export const AIAnalysisResponseSchema = z
   .object({
     picks: z.array(AIPickSchema).max(200),
@@ -264,5 +283,10 @@ export const AIAnalysisResponseSchema = z
       .default([]),
     summary: z.string().max(4000).optional().default(''),
     warnings: z.array(z.string().max(1000)).max(50).optional().default([]),
+    shadowEvaluations: z
+      .array(AIShadowEvaluationSchema)
+      .max(16)
+      .optional()
+      .default([]),
   })
   .passthrough();

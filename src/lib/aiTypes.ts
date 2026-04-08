@@ -47,6 +47,23 @@ export interface AIPick {
   finalEV?: number;
 }
 
+/**
+ * Shadow evaluation: a prop the model considered but did NOT recommend as
+ * a bet. Stored for calibration tracking, never displayed as a betting
+ * suggestion. See prompt section 6.1b. Reasoning is only expected on tier
+ * "A" entries (rare — A-tier props normally appear in `picks`).
+ */
+export interface AIShadowEvaluation {
+  playerName: string;
+  statType: string;
+  line: number;
+  direction: 'over' | 'under';
+  confidenceTier: 'A' | 'B' | 'C' | 'REJECT';
+  finalProbability?: number;
+  finalEV?: number;
+  reasoning?: string;
+}
+
 export interface AISlip {
   platform: string;
   slipType: string;
