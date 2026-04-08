@@ -126,9 +126,9 @@ export function pickClosingOdds(pick: PickRow): number | null {
   return pick.closing_odds_under;
 }
 
-/** Returns true iff `won` has been decided (not null). */
+/** Returns true iff `won` has been decided (not null/undefined). */
 export function isResolved(pick: PickRow): boolean {
-  return pick.won !== null;
+  return pick.won != null;
 }
 
 // ===================================================================
@@ -144,7 +144,12 @@ export function isResolved(pick: PickRow): boolean {
  */
 export function pickToPrediction(pick: PickRow): Prediction | null {
   if (!isResolved(pick) || pick.pushed) return null;
-  if (pick.calculator_prob === null) return null;
+  // `== null` catches both null and undefined. Supabase returns undefined
+  // (not null) for columns that don't exist in the table, e.g. when a
+  // migration hasn't been applied yet — without the loose check, undefined
+  // slips through, propagates into brierScore/logLoss as NaN, and the wire
+  // value lands as `null` on the client (JSON.stringify(NaN) → "null").
+  if (pick.calculator_prob == null) return null;
   return {
     probability: pick.calculator_prob,
     outcome: pick.won ? 1 : 0,
@@ -162,7 +167,7 @@ export function pickToPrediction(pick: PickRow): Prediction | null {
  */
 export function pickToRawPrediction(pick: PickRow): Prediction | null {
   if (!isResolved(pick) || pick.pushed) return null;
-  if (pick.raw_calculator_prob === null) return null;
+  if (pick.raw_calculator_prob == null) return null;
   return {
     probability: pick.raw_calculator_prob,
     outcome: pick.won ? 1 : 0,
@@ -179,7 +184,7 @@ export function pickToRawPrediction(pick: PickRow): Prediction | null {
 export function pickToResolved(pick: PickRow): ResolvedPick | null {
   if (!isResolved(pick)) return null;
   const odds = pickBetOdds(pick);
-  if (odds === null) return null;
+  if (odds == null) return null;
   return {
     won: pick.won === true,
     pushed: pick.pushed,
@@ -199,7 +204,7 @@ export function pickToResolved(pick: PickRow): ResolvedPick | null {
 export function pickToCLV(pick: PickRow): CLVPick | null {
   const betOdds = pickBetOdds(pick);
   const closingOdds = pickClosingOdds(pick);
-  if (betOdds === null || closingOdds === null) return null;
+  if (betOdds == null || closingOdds == null) return null;
   return { betOdds, closingOdds };
 }
 
@@ -248,10 +253,13 @@ export function summarizePicks(
   picks: PickRow[],
   startingBankroll: number = 100,
 ): PickSummary {
-  // Counts — these don't need any null guards
+  // Counts. `decidedPicks` is hoisted because the hit-rate inputs below
+  // also need it — building it once and reusing avoids three separate
+  // `picks.filter(isResolved)` passes over the same array.
   const totalPicks = picks.length;
-  const resolvedPicks = picks.filter((p) => isResolved(p)).length;
-  const pendingPicks = picks.filter((p) => !isResolved(p)).length;
+  const decidedPicks = picks.filter(isResolved);
+  const resolvedPicks = decidedPicks.length;
+  const pendingPicks = totalPicks - resolvedPicks;
   const pushedPicks = picks.filter((p) => p.pushed).length;
 
   // Calibration: AI-adjusted predictions
@@ -264,7 +272,8 @@ export function summarizePicks(
     .map(pickToRawPrediction)
     .filter((p): p is Prediction => p !== null);
 
-  // ROI / hit rate / drawdown — all driven by ResolvedPick
+  // ROI / drawdown — all driven by ResolvedPick (which requires bet odds).
+  // Note: hit-rate metrics are NOT derived from this array — see below.
   const resolved: ResolvedPick[] = picks
     .map(pickToResolved)
     .filter((p): p is ResolvedPick => p !== null);
@@ -274,16 +283,16 @@ export function summarizePicks(
     .map(pickToCLV)
     .filter((p): p is CLVPick => p !== null);
 
-  // Hit rate by tier needs the (tier, won, pushed) shape — and the tier
-  // here means the AI-confidence-tier the pick was placed at, not the raw
-  // calculator tier (which we evaluate separately via rawPredictions).
-  const hitRateByTierInput = picks
-    .filter((p) => isResolved(p))
-    .map((p) => ({
-      tier: coerceTier(p.ai_confidence_tier),
-      won: p.won === true,
-      pushed: p.pushed,
-    }));
+  // Hit rate inputs only need (won, pushed, tier) — they're independent of
+  // odds, so they must NOT be derived from `resolved` (which requires odds
+  // and would silently drop picks for legacy / unmigrated rows). One mapped
+  // array carries the tier; `hitRate()` ignores the extra field via
+  // structural typing, so both calls share the same input.
+  const hitRateInput = decidedPicks.map((p) => ({
+    tier: coerceTier(p.ai_confidence_tier),
+    won: p.won === true,
+    pushed: p.pushed,
+  }));
 
   // Net units (sum of cumulative profit curve's final value)
   const profitCurve = cumulativeProfit(resolved);
@@ -295,8 +304,8 @@ export function summarizePicks(
     pendingPicks,
     pushedPicks,
 
-    hitRate: hitRate(resolved),
-    hitRateByTier: hitRateByTier(hitRateByTierInput),
+    hitRate: hitRate(hitRateInput),
+    hitRateByTier: hitRateByTier(hitRateInput),
 
     brierScore: brierScore(aiPredictions),
     logLoss: logLoss(aiPredictions),

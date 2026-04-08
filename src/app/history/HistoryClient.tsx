@@ -358,7 +358,7 @@ function SummaryCard({ summary }: { summary: PickSummary }) {
         <Stat label="Resolved" value={String(summary.resolvedPicks)} />
         <Stat label="Hit Rate" value={fmtPct(summary.hitRate)} />
         <Stat label="Flat ROI" value={fmtPct(summary.flatROI)} />
-        <Stat label="Net Units" value={summary.netUnits.toFixed(2)} />
+        <Stat label="Net Units" value={fmtNum(summary.netUnits, 2)} />
         <Stat label="Max DD" value={fmtPct(summary.maxDrawdownPct)} />
         <Stat label="Brier (AI)" value={fmtNum(summary.brierScore)} />
         <Stat label="Brier (Raw)" value={fmtNum(summary.rawBrierScore)} />
