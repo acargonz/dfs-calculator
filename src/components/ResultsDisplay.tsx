@@ -49,7 +49,19 @@ function SideCard({
         </div>
       </div>
       <div className="grid grid-cols-2 gap-2">
-        <div className="rounded p-2 text-center" style={{ background: 'var(--bg-card)' }}>
+        <div
+          className="rounded p-2 text-center"
+          style={{ background: 'var(--bg-card)' }}
+          title={
+            'Per-dollar Kelly EV on this single leg.\n\n' +
+            'Formula: EV = p × (decimalOdds − 1) − (1 − p)\n' +
+            'where p is the BLENDED probability above (60% model, 40% market devig).\n\n' +
+            'A +30% EV does NOT mean a +30% return on a parlay slip — DFS books require\n' +
+            '2+ legs to cash, and the slip math compounds variance. The tier filter (HIGH/\n' +
+            'MEDIUM/LOW) and the AI overlay both consume this number to decide which legs\n' +
+            'survive into a build. High raw EVs here are normal on softer lines.'
+          }
+        >
           <p className="text-[10px] mb-0.5" style={{ color: 'var(--text-muted)' }}>Expected Value</p>
           <p className={`text-sm font-bold ${evPositive ? 'text-emerald-400' : 'text-red-400'}`}>
             {evPositive ? '+' : ''}{(side.ev * 100).toFixed(1)}%

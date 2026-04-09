@@ -1007,8 +1007,11 @@ async function callOpenRouter(
     ],
     temperature: 0.3,
     max_tokens: 8192,
-    // Ask the model to return JSON only if the provider supports it
-    response_format: { type: 'json_object' },
+    // No response_format: several OpenRouter `:free` models (gpt-oss-120b
+    // and friends) silently return empty completions when `json_object` is
+    // set. The system prompt instructs JSON output and parseAIResponse
+    // already tolerates fenced JSON, so the flag is redundant on providers
+    // that support it. Regression test in __tests__/aiAnalysis.test.ts.
   };
 
   const res = await fetchWithRetry(url, {

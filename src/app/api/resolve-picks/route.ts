@@ -23,15 +23,18 @@
  *
  * IO contract:
  *   1. Query Supabase for all picks where won IS NULL and date < today.
- *   2. Group by date so we only fetch each ESPN scoreboard once.
- *   3. For each date:
+ *   2. Group by date, then expand each date into a ±1-day window (see
+ *      `neighboringDates` for the timezone-skew rationale). Dedupe the
+ *      union so each ESPN scoreboard is fetched at most once per cron run.
+ *   3. For each unique date in the window:
  *        a. Fetch the ESPN scoreboard to enumerate game IDs.
  *        b. Fetch each game's /summary in parallel (sequentially per date
  *           to stay polite, but parallel within the date's games).
  *        c. Flatten every athlete into a single box-score array via
  *           flattenGameSummary().
- *   4. For each pending pick, call resolvePick() from src/lib/pickResolver
- *      against the fetched box scores. Collect outcomes and DNPs.
+ *   4. For each pending pick, combine its date's box scores with its ±1
+ *      neighbors' and call resolvePick() from src/lib/pickResolver against
+ *      the union. Collect outcomes and DNPs.
  *   5. Batch-update the picks table with actual_value / won / pushed /
  *      resolved_at.
  *   6. Return a summary json for the cron log.
@@ -106,6 +109,29 @@ function daysAgoUTC(n: number): string {
  */
 function isoToCompact(iso: string): string {
   return iso.replaceAll('-', '');
+}
+
+/**
+ * Return [date, date+1, date−1] as YYYY-MM-DD strings — the resolver search
+ * order for one pick.
+ *
+ * `picks.date` is stamped in UTC by /api/analyze, but ESPN files box scores
+ * by ET game date. Evening analyze runs roll UTC over before ET, late West
+ * Coast tips skew the other way, so pick.date can be off by exactly one
+ * day. The ±1 union catches both directions and self-heals stale rows.
+ *
+ * Order matters: findBoxScoreIndex() returns the FIRST match, so on
+ * back-to-back nights we prefer the pick's own date, then the more common
+ * +1 skew, then −1 as a last resort.
+ */
+function neighboringDates(date: string): string[] {
+  const d = new Date(`${date}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return [date];
+  const next = new Date(d);
+  next.setUTCDate(next.getUTCDate() + 1);
+  const prev = new Date(d);
+  prev.setUTCDate(prev.getUTCDate() - 1);
+  return [date, next.toISOString().split('T')[0], prev.toISOString().split('T')[0]];
 }
 
 /**
@@ -226,11 +252,17 @@ export async function GET(request: NextRequest) {
     byDate.set(p.date, list);
   }
 
-  // 3. Fetch box scores for each unique date. Dates are fetched sequentially
-  //    (we're polite to ESPN — it's free) but each date's games are fetched
-  //    in parallel inside fetchBoxScoresForDate.
+  // 3. Fetch box scores for each unique date in the ±1 window around every
+  //    pending pick date. Deduplicated across pick dates so each ESPN
+  //    scoreboard is fetched at most once. Sequential at the date level (be
+  //    polite to ESPN's free API), parallel within each date's games.
+  const datesToFetch = new Set<string>();
+  for (const pickDate of byDate.keys()) {
+    for (const d of neighboringDates(pickDate)) datesToFetch.add(d);
+  }
+
   const boxScoresByDate = new Map<string, FlatBoxScore[]>();
-  for (const date of byDate.keys()) {
+  for (const date of datesToFetch) {
     try {
       const { boxes } = await fetchBoxScoresForDate(date);
       boxScoresByDate.set(date, boxes);
@@ -256,7 +288,13 @@ export async function GET(request: NextRequest) {
   }> = [];
 
   for (const pick of pendingPicks) {
-    const boxes = boxScoresByDate.get(pick.date) ?? [];
+    // Combine the pick's date with its ±1 neighbors so a UTC/ET timezone
+    // skew on either side can't hide the box score from the matcher.
+    const combinedBoxes: FlatBoxScore[] = [];
+    for (const d of neighboringDates(pick.date)) {
+      const dayBoxes = boxScoresByDate.get(d);
+      if (dayBoxes) combinedBoxes.push(...dayBoxes);
+    }
     const result = resolvePick(
       {
         playerName: pick.playerName,
@@ -264,7 +302,7 @@ export async function GET(request: NextRequest) {
         line: pick.line,
         direction: pick.direction,
       },
-      boxes,
+      combinedBoxes,
     );
 
     switch (result.status) {

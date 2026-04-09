@@ -136,6 +136,40 @@ describe('pickToPrediction', () => {
     const result = pickToPrediction(makePick({ won: false, calculator_prob: 0.55 }));
     expect(result).toEqual({ probability: 0.55, outcome: 0 });
   });
+
+  // Regression: legacy picks written before the analyze-route sanitizer
+  // landed could store calculator_prob as a percentage (e.g. 65 instead of
+  // 0.65). Letting one through poisoned brierScore — the user-visible
+  // banner read "Brier: 4198.0281" because (65 − 1)² ≈ 4096 was averaged in
+  // with the legitimate sub-1 values. The bounds guard filters them out.
+  test('returns null when calculator_prob is stored as a percentage (>1)', () => {
+    expect(
+      pickToPrediction(makePick({ won: true, calculator_prob: 65 })),
+    ).toBeNull();
+  });
+
+  test('returns null when calculator_prob is negative', () => {
+    expect(
+      pickToPrediction(makePick({ won: true, calculator_prob: -0.1 })),
+    ).toBeNull();
+  });
+
+  test('returns null when calculator_prob is NaN', () => {
+    expect(
+      pickToPrediction(makePick({ won: true, calculator_prob: Number.NaN })),
+    ).toBeNull();
+  });
+
+  test('accepts boundary values 0 and 1', () => {
+    expect(pickToPrediction(makePick({ won: false, calculator_prob: 0 }))).toEqual({
+      probability: 0,
+      outcome: 0,
+    });
+    expect(pickToPrediction(makePick({ won: true, calculator_prob: 1 }))).toEqual({
+      probability: 1,
+      outcome: 1,
+    });
+  });
 });
 
 // ============================================================================
@@ -160,6 +194,18 @@ describe('pickToRawPrediction', () => {
     expect(pickToRawPrediction(makePick({ won: null }))).toBeNull();
     expect(
       pickToRawPrediction(makePick({ won: false, pushed: true })),
+    ).toBeNull();
+  });
+
+  test('returns null when raw_calculator_prob is out of [0,1]', () => {
+    expect(
+      pickToRawPrediction(makePick({ won: true, raw_calculator_prob: 55 })),
+    ).toBeNull();
+    expect(
+      pickToRawPrediction(makePick({ won: true, raw_calculator_prob: -0.5 })),
+    ).toBeNull();
+    expect(
+      pickToRawPrediction(makePick({ won: true, raw_calculator_prob: Number.NaN })),
     ).toBeNull();
   });
 });
@@ -454,6 +500,25 @@ describe('summarizePicks', () => {
     expect(summary.hitRateByTier.MEDIUM).toBe(1);
     expect(summary.hitRateByTier.LOW).toBe(0.5);
     expect(Number.isNaN(summary.hitRateByTier.REJECT)).toBe(true);
+  });
+
+  test('legacy out-of-range probabilities cannot blow up brierScore', () => {
+    // Reproduces the production incident: an SystemStatusCard alert showed
+    // "Brier: 4198.0281" because some legacy picks stored calculator_prob as
+    // a percentage (65) instead of a fraction (0.65). With the read-side
+    // bounds guard those legacy rows are filtered out and Brier stays in
+    // the mathematically valid [0,1] range — derived from the well-formed
+    // picks alone.
+    const picks = [
+      makePick({ id: 'good1', won: true, calculator_prob: 0.7 }),
+      makePick({ id: 'good2', won: false, calculator_prob: 0.3 }),
+      makePick({ id: 'legacy', won: true, calculator_prob: 65 }),
+    ];
+    const summary = summarizePicks(picks);
+    expect(summary.brierScore).toBeGreaterThanOrEqual(0);
+    expect(summary.brierScore).toBeLessThanOrEqual(1);
+    // Sanity: only the two well-formed picks contribute → (0.7-1)² + (0.3-0)² = 0.18 / 2 = 0.09
+    expect(summary.brierScore).toBeCloseTo(0.09, 5);
   });
 
   test('coerceTier accepts both HIGH/MEDIUM/LOW and A/B/C in the same dataset', () => {

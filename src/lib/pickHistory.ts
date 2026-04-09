@@ -150,6 +150,14 @@ export function pickToPrediction(pick: PickRow): Prediction | null {
   // slips through, propagates into brierScore/logLoss as NaN, and the wire
   // value lands as `null` on the client (JSON.stringify(NaN) → "null").
   if (pick.calculator_prob == null) return null;
+  // Read-side bounds guard. The analyze route has sanitized probabilities
+  // since `45ad10d`, but legacy picks written before that may have stored
+  // values as percentages (e.g. 65 instead of 0.65) or NaN. Letting them
+  // through poisons brierScore — squared error of (65 − 1)² ≈ 4096 per
+  // pick blew the system-status banner up to "Brier: 4198.0281". Filter
+  // them out here so all three calibration surfaces (system-status,
+  // calibration dashboard, history) stay in agreement without a backfill.
+  if (!isValidProbability(pick.calculator_prob)) return null;
   return {
     probability: pick.calculator_prob,
     outcome: pick.won ? 1 : 0,
@@ -168,10 +176,21 @@ export function pickToPrediction(pick: PickRow): Prediction | null {
 export function pickToRawPrediction(pick: PickRow): Prediction | null {
   if (!isResolved(pick) || pick.pushed) return null;
   if (pick.raw_calculator_prob == null) return null;
+  // Same legacy-data guard as pickToPrediction — see note above.
+  if (!isValidProbability(pick.raw_calculator_prob)) return null;
   return {
     probability: pick.raw_calculator_prob,
     outcome: pick.won ? 1 : 0,
   };
+}
+
+/**
+ * True iff `v` is a finite number in [0, 1] — the only shape brierScore /
+ * logLoss can consume safely. Out-of-range values come from legacy picks
+ * written before the analyze-route sanitizer landed in `45ad10d`.
+ */
+function isValidProbability(v: number): boolean {
+  return Number.isFinite(v) && v >= 0 && v <= 1;
 }
 
 /**

@@ -345,7 +345,18 @@ export async function POST(request: NextRequest) {
           });
 
           if (pickRows.length > 0) {
-            await supabase.from('picks').insert(pickRows);
+            // Log insert failures so a silent picks-table outage doesn't
+            // present downstream as "resolved count never moves".
+            const { error: pickInsertErr } = await supabase
+              .from('picks')
+              .insert(pickRows);
+            if (pickInsertErr) {
+              // eslint-disable-next-line no-console
+              console.error(
+                '[analyze] picks insert failed:',
+                pickInsertErr.message,
+              );
+            }
           }
         }
       }

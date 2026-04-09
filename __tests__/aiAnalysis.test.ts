@@ -8,6 +8,7 @@ import {
   healTruncatedJson,
   normalizeAIPick,
   parseAIResponse,
+  runAIAnalysis,
   salvagePicksFromMalformed,
   shouldRetryStatus,
   type AIAnalysisRequest,
@@ -1061,5 +1062,46 @@ describe('buildUserMessage season phase rendering', () => {
     expect(msg).toContain('0.75');
     // The model should not be told to "add" further variance discounts.
     expect(msg).toMatch(/already applied|already in the stake/i);
+  });
+});
+
+describe('callOpenRouter HTTP request shape (regression)', () => {
+  // See callOpenRouter in src/lib/aiAnalysis.ts for why response_format
+  // must not be set on OpenRouter requests.
+  it('does NOT set response_format on the OpenRouter request body', async () => {
+    let capturedBody: Record<string, unknown> | null = null;
+    const originalFetch = global.fetch;
+    global.fetch = jest.fn(async (_url: unknown, init: RequestInit) => {
+      capturedBody = JSON.parse(init.body as string);
+      return new Response(
+        JSON.stringify({
+          choices: [
+            { message: { content: '{"picks":[],"slips":[],"summary":"x","warnings":[]}' } },
+          ],
+          usage: { total_tokens: 100 },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    }) as unknown as typeof global.fetch;
+
+    try {
+      await runAIAnalysis({
+        provider: 'openrouter',
+        apiKey: 'test-key',
+        model: 'openai/gpt-oss-120b:free',
+        systemPrompt: 'sys',
+        calculatorResults: mockBatchResult,
+        bankroll: 200,
+        platform: 'prizepicks',
+        jurisdiction: 'California',
+      });
+    } finally {
+      global.fetch = originalFetch;
+    }
+
+    // Guard against the mock never running — `null.toHaveProperty(...)` would
+    // also pass and produce a false green.
+    expect(capturedBody).not.toBeNull();
+    expect(capturedBody).not.toHaveProperty('response_format');
   });
 });
