@@ -97,6 +97,7 @@ export interface DashboardViewModel {
   aiPredictionCount: number;
   rawPredictionCount: number;
   profitCurve: number[];
+  /** Picks with bet odds AND a resolved outcome — drives ROI / profit / CLV. */
   resolvedCount: number;
   /** Headline metric CIs. NaN means insufficient data. */
   hitRateCI: { mean: number; lower: number; upper: number };
@@ -165,8 +166,17 @@ export function buildDashboardViewModel(picks: PickRow[]): DashboardViewModel {
   const profitCurve = cumulativeProfit(resolved);
 
   // --- Bootstrap CIs on headline metrics ----------------------------------
-  // Hit rate: sample from 0/1 outcomes (pushes excluded).
-  const outcomes = resolved.filter((r) => !r.pushed).map((r) => (r.won ? 1 : 0));
+  // Hit rate is derived from picks directly (won != null && !pushed) rather
+  // than from `resolved`, because the latter requires bet odds and would be
+  // empty for legacy picks pre-migration-001. The system status banner /
+  // pick history page already compute hit rate this way via summarizePicks,
+  // and the dashboard would otherwise hide this metric whenever odds are
+  // missing — exactly the case that produced the "60 resolved, dashboard
+  // shows empty" report.
+  const decidedPicks = picks.filter(
+    (p) => p.won != null && !p.pushed,
+  );
+  const outcomes = decidedPicks.map((p) => (p.won === true ? 1 : 0));
   const hitRateCI =
     outcomes.length > 0
       ? bootstrapCI(outcomes, BOOTSTRAP_ITERATIONS, 0.95, BOOTSTRAP_SEED)
@@ -327,7 +337,14 @@ export default function CalibrationDashboard() {
     );
   }
 
-  if (!vm || !summary || vm.resolvedCount === 0) {
+  // Empty state: gate on `summary.resolvedPicks` (the count of picks with
+  // won != null OR pushed), NOT on `vm.resolvedCount` which requires bet
+  // odds. Pre-migration-001 picks lack bet_odds_* columns, so the old guard
+  // hid the entire dashboard whenever odds were missing — even though the
+  // reliability curve, hit rate CI, and tier breakdown all work without
+  // them. This was the "60 resolved picks but calibration tab says empty"
+  // bug.
+  if (!vm || !summary || summary.resolvedPicks === 0) {
     return (
       <div
         className="rounded-lg border p-8 text-center text-sm"
@@ -344,8 +361,33 @@ export default function CalibrationDashboard() {
     );
   }
 
+  // Surface a non-blocking notice when picks are resolved but bet odds are
+  // missing — explains why Flat ROI / Avg CLV / profit curve / by-bookmaker
+  // all show "—" even though there ARE resolved picks. Heals naturally as
+  // new picks accumulate (analyze route captures bet odds since migration 001).
+  const missingOdds = vm.resolvedCount === 0 && summary.resolvedPicks > 0;
+  const hasProfitData = vm.profitCurve.length > 0;
+
   return (
     <div className="space-y-6" data-testid="calibration-dashboard">
+      {missingOdds && (
+        <div
+          className="rounded-lg border p-3 text-xs"
+          data-testid="calibration-missing-odds-notice"
+          style={{
+            borderColor: 'rgba(245, 158, 11, 0.35)',
+            background: 'rgba(245, 158, 11, 0.08)',
+            color: 'var(--text-secondary)',
+          }}
+        >
+          <strong style={{ color: '#f59e0b' }}>Note:</strong> {summary.resolvedPicks}
+          {' '}picks are resolved but were captured before bet-time odds were
+          recorded (migration 001). Reliability curve, hit rate, and tier
+          breakdown work normally; Flat ROI, Avg CLV, profit curve, and the
+          by-bookmaker slice show &ldquo;—&rdquo; until new picks accumulate.
+        </div>
+      )}
+
       {/* ---- Headline metrics with CIs ---- */}
       <section
         className="rounded-lg border p-4"
@@ -356,7 +398,7 @@ export default function CalibrationDashboard() {
             Headline Metrics (95% Bootstrap CI)
           </h2>
           <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
-            {vm.resolvedCount} resolved picks
+            {summary.resolvedPicks} resolved picks
           </span>
         </div>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -490,9 +532,25 @@ export default function CalibrationDashboard() {
         </p>
         <ProfitCurveSVG curve={vm.profitCurve} />
         <div className="mt-3 grid grid-cols-3 gap-3 text-xs">
-          <MiniStat label="Final Net" value={vm.profitCurve.length > 0 ? vm.profitCurve[vm.profitCurve.length - 1].toFixed(2) : '0.00'} />
-          <MiniStat label="Max DD" value={summary.maxDrawdown.toFixed(2)} />
-          <MiniStat label="Max DD %" value={fmtPct(summary.maxDrawdownPct)} />
+          {/* "—" rather than "0.00" when no picks have bet odds: a true zero
+              means the strategy broke even, which is a very different signal
+              from "no data to compute P&L yet". */}
+          <MiniStat
+            label="Final Net"
+            value={
+              hasProfitData
+                ? vm.profitCurve[vm.profitCurve.length - 1].toFixed(2)
+                : '—'
+            }
+          />
+          <MiniStat
+            label="Max DD"
+            value={hasProfitData ? summary.maxDrawdown.toFixed(2) : '—'}
+          />
+          <MiniStat
+            label="Max DD %"
+            value={hasProfitData ? fmtPct(summary.maxDrawdownPct) : '—'}
+          />
         </div>
       </section>
 

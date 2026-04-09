@@ -157,6 +157,43 @@ describe('buildDashboardViewModel', () => {
     expect(vm.profitCurve).toHaveLength(1);
   });
 
+  test('hit rate CI is populated even when picks lack bet odds (legacy data)', () => {
+    // The "60 resolved, dashboard empty" bug came from deriving the hit rate
+    // CI off the `resolved` array — which requires bet odds. Legacy picks
+    // pre-migration-001 have no bet_odds_*, so the CI was NaN even though
+    // the picks had clear win/loss outcomes. After the fix, the hit rate CI
+    // should be computed directly from picks (won != null && !pushed).
+    const picks = Array.from({ length: 10 }, (_, i) =>
+      makePick({
+        id: `pick-${i}`,
+        won: i < 6, // 6 wins / 4 losses
+        bet_odds_over: null,
+        bet_odds_under: null,
+      }),
+    );
+    const vm = buildDashboardViewModel(picks);
+    // Resolved-with-odds count is 0 — ROI / CLV / profit math correctly skip
+    expect(vm.resolvedCount).toBe(0);
+    expect(vm.profitCurve).toHaveLength(0);
+    expect(Number.isNaN(vm.flatROICI.mean)).toBe(true);
+    expect(Number.isNaN(vm.clvCI.mean)).toBe(true);
+    // But the hit rate CI is still populated from the outcomes alone
+    expect(vm.hitRateCI.mean).toBeCloseTo(0.6, 5);
+    expect(Number.isFinite(vm.hitRateCI.lower)).toBe(true);
+    expect(Number.isFinite(vm.hitRateCI.upper)).toBe(true);
+  });
+
+  test('hit rate CI excludes pushed picks', () => {
+    const picks = [
+      makePick({ won: true, pushed: false, bet_odds_over: -110 }),
+      makePick({ won: false, pushed: false, bet_odds_over: -110 }),
+      makePick({ won: null, pushed: true, bet_odds_over: -110 }),
+    ];
+    const vm = buildDashboardViewModel(picks);
+    // 1 win out of 2 non-pushed = 0.5
+    expect(vm.hitRateCI.mean).toBeCloseTo(0.5, 5);
+  });
+
   test('hit rate CI mean equals outcome mean (deterministic with seed)', () => {
     const picks = Array.from({ length: 10 }, (_, i) =>
       makePick({
@@ -302,6 +339,37 @@ describe('CalibrationDashboard', () => {
     });
   });
 
+  it('shows empty state when picks exist but none are resolved yet', async () => {
+    // Regression guard for the empty-state trigger. The fix for the
+    // "missing odds" bug swapped the guard from `vm.resolvedCount === 0`
+    // (which required bet odds) to `summary.resolvedPicks === 0`. This
+    // test locks in that the all-pending case still hits the empty state —
+    // otherwise a brand-new user with only pending picks would see a
+    // half-rendered dashboard full of NaN metrics.
+    const picks = [
+      makePick({ won: null, pushed: false, resolved_at: null }),
+      makePick({ won: null, pushed: false, resolved_at: null }),
+    ];
+    mockFetchOnce({
+      picks,
+      summary: {
+        ...makeEmptySummary(),
+        totalPicks: 2,
+        resolvedPicks: 0,
+        pendingPicks: 2,
+      },
+      count: 2,
+    });
+    render(<CalibrationDashboard />);
+    await waitFor(() => {
+      expect(screen.getByTestId('calibration-empty')).toBeInTheDocument();
+    });
+    // And critically NOT the populated dashboard
+    expect(
+      screen.queryByTestId('calibration-dashboard'),
+    ).not.toBeInTheDocument();
+  });
+
   it('shows error state when fetch fails', async () => {
     mockFetchError('Network down');
     render(<CalibrationDashboard />);
@@ -336,6 +404,65 @@ describe('CalibrationDashboard', () => {
     expect(screen.getByTestId('profit-curve')).toBeInTheDocument();
     // Headline metrics section shows the pick count
     expect(screen.getByText(/3 resolved picks/i)).toBeInTheDocument();
+  });
+
+  it('renders dashboard for resolved picks even when bet odds are missing', async () => {
+    // Reproduces the user-facing bug: 60 resolved picks in the DB, all
+    // pre-migration-001 (no bet_odds_*), calibration tab showed empty state.
+    const picks = [
+      makePick({ won: true, bet_odds_over: null, bet_odds_under: null }),
+      makePick({ won: false, bet_odds_over: null, bet_odds_under: null }),
+      makePick({ won: true, bet_odds_over: null, bet_odds_under: null }),
+    ];
+    mockFetchOnce({
+      picks,
+      summary: {
+        ...makeEmptySummary(),
+        totalPicks: 3,
+        resolvedPicks: 3,
+        hitRate: 2 / 3,
+      },
+      count: 3,
+    });
+    render(<CalibrationDashboard />);
+    await waitFor(() => {
+      expect(screen.getByTestId('calibration-dashboard')).toBeInTheDocument();
+    });
+    // Empty state is NOT rendered
+    expect(screen.queryByTestId('calibration-empty')).not.toBeInTheDocument();
+    // Missing-odds notice IS rendered
+    expect(
+      screen.getByTestId('calibration-missing-odds-notice'),
+    ).toBeInTheDocument();
+    // Heading shows the true resolved count, not the with-odds count
+    expect(screen.getByText(/3 resolved picks/i)).toBeInTheDocument();
+    // Reliability curve still renders (uses pickToPrediction, not bet odds)
+    expect(screen.getByTestId('reliability-curve')).toBeInTheDocument();
+    // Tier breakdown still renders
+    expect(screen.getByTestId('tier-breakdown')).toBeInTheDocument();
+  });
+
+  it('does NOT show the missing-odds notice when bet odds ARE present', async () => {
+    const picks = [
+      makePick({ won: true, bet_odds_over: -110 }),
+      makePick({ won: false, bet_odds_over: -110 }),
+    ];
+    mockFetchOnce({
+      picks,
+      summary: {
+        ...makeEmptySummary(),
+        totalPicks: 2,
+        resolvedPicks: 2,
+      },
+      count: 2,
+    });
+    render(<CalibrationDashboard />);
+    await waitFor(() => {
+      expect(screen.getByTestId('calibration-dashboard')).toBeInTheDocument();
+    });
+    expect(
+      screen.queryByTestId('calibration-missing-odds-notice'),
+    ).not.toBeInTheDocument();
   });
 
   it('shows by-bookmaker table with grouped counts', async () => {
