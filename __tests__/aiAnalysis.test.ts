@@ -890,12 +890,19 @@ describe('buildUserMessage odds integration', () => {
     expect(msg).toContain('REJECT');
   });
 
-  it('reports zero injuries when none supplied', () => {
+  it('reports zero injuries when none supplied and frames empty list as complete data', () => {
     const msg = buildUserMessage(req);
-    expect(msg).toContain('zero reported injuries');
+    // Must communicate that empty = no injuries reported (not missing data)
+    expect(msg).toContain('zero injuries currently reported');
+    // Must explicitly frame the list as COMPLETE so weaker models don't
+    // rationalize "injury data is incomplete" as a reason to return empty picks.
+    expect(msg).toContain('COMPLETE list');
+    // Must explicitly tell the model "absence from the list = healthy" so it
+    // doesn't read "most players have no status tagged" as missing data.
+    expect(msg).toContain('absence from the list IS the "no injury" signal');
   });
 
-  it('reports injury count when supplied', () => {
+  it('reports injury count when supplied and frames the list as authoritative', () => {
     const msg = buildUserMessage({
       ...req,
       injuries: [
@@ -903,6 +910,28 @@ describe('buildUserMessage odds integration', () => {
       ],
     });
     expect(msg).toContain('1 entries');
+    expect(msg).toContain('COMPLETE list');
+  });
+
+  it('explicitly overrides legacy HALT-on-missing-injury rules from the system prompt', () => {
+    // Regression guard for the openai/gpt-oss-120b:free empty-picks bug: the
+    // legacy prompt has absolute-language "MUST HALT" / "STOP" rules written
+    // for the old manual-paste workflow. The user message must contain an
+    // explicit override so weaker models don't latch onto those rules.
+    const msg = buildUserMessage(req);
+    expect(msg).toContain('OVERRIDES');
+    expect(msg).toContain('HALT');
+    expect(msg).toMatch(/injury data is incomplete.*NOT acceptable/);
+  });
+
+  it('scopes shadowEvaluations to the working set, not the full candidate table', () => {
+    // Regression guard: weaker models saw 770-row candidate tables and
+    // concluded they had to emit 770 shadow evaluations, blowing the output
+    // token budget. The user message must make it unambiguous that shadow
+    // evals cover the ≤8-prop working set only.
+    const msg = buildUserMessage(req);
+    expect(msg).toContain('WORKING SET');
+    expect(msg).toContain('NOT the entire candidate table');
   });
 });
 

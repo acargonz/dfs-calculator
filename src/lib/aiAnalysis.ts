@@ -178,12 +178,12 @@ export function buildUserMessage(req: AIAnalysisRequest): string {
   lines.push(`- Season-long player averages (PBP Stats) — the "Mean" column below.`);
   lines.push(`- Calculator-computed fair probabilities (devigged), model probabilities (negative binomial / normal), 60/40 blended probability, EV vs posted price, quarter-Kelly stake, and tier.`);
   lines.push(`- Player position (when matched in balldontlie).`);
-  lines.push(`- ESPN injury report (${hasInjuries ? `${req.injuries!.length} entries` : 'empty — zero reported injuries at fetch time'}).`);
+  lines.push(`- ESPN injury report (${hasInjuries ? `${req.injuries!.length} entries — COMPLETE list of currently-reported injuries` : 'zero entries — COMPLETE list, zero injuries currently reported at fetch time'}). This list is authoritative: every player with a reported status appears in it. Any player NOT in the list is treated as healthy for analysis — absence from the list IS the "no injury" signal, not missing data.`);
   if (hasLineups) lines.push(`- Team roster / lineup context (ESPN).`);
   lines.push('');
   lines.push(`UNAVAILABLE (do not ask for, do not penalize for absence):`);
   if (!hasLineups) lines.push(`- Pre-game confirmed starting lineups (not free).`);
-  lines.push(`- Team affiliation for every prop player (only injured players have team tagged).`);
+  lines.push(`- Team affiliation for non-injured prop players (only injured players have team tagged in the injury block — this is cosmetic, not a data gap).`);
   lines.push(`- Rolling last-N game logs / recent form.`);
   lines.push(`- Pace, matchup DVP, altitude, rest/B2B context.`);
   lines.push(`- Minute projections, usage rate, field ownership.`);
@@ -194,9 +194,10 @@ export function buildUserMessage(req: AIAnalysisRequest): string {
   lines.push(`2. HIGH tier → map to confidenceTier "A". MEDIUM → "B". LOW → "C". REJECT → "REJECT".`);
   lines.push(`3. Only override the calculator tier when the injury report gives clear, direct evidence (e.g. starter listed OUT → teammates' usage picks upgraded; target player listed OUT → REJECT the pick).`);
   lines.push(`4. Do NOT invent modifiers for missing pace/matchup data. Leave those fields at 0 in the "modifiers" block.`);
-  lines.push(`5. A valid analysis can produce picks even with zero injury adjustments. "Insufficient context" is NOT an acceptable excuse to return an empty picks array when the calculator has produced HIGH or MEDIUM tiers.`);
-  lines.push(`6. If the calculator returned HIGH/MEDIUM tiers, you MUST return those as picks (with appropriate A/B confidence) unless the injury report contains a direct contradiction.`);
-  lines.push(`7. After listing your picks, ALSO produce a "shadowEvaluations" entry for every prop you considered but did NOT recommend as a bet. See system prompt Section 6.1b. These are for calibration tracking, not betting — be honest about tier assignments. Only include the "reasoning" field on shadow entries with confidenceTier "A"; for "B"/"C"/"REJECT" entries, omit reasoning entirely. picks.length + shadowEvaluations.length must equal the number of props you evaluated this session.`);
+  lines.push(`5. A valid analysis can produce picks even with zero injury adjustments. "Insufficient context" / "injury data is incomplete" / "cannot verify active status" are NOT acceptable reasons to return an empty picks array. The calculator's HIGH/MEDIUM tiers stand on their own sharp-odds + model math; injury context is an OVERLAY that can adjust individual picks, not a precondition for running the analysis.`);
+  lines.push(`6. If the calculator returned HIGH/MEDIUM tiers, you MUST return those as picks (with appropriate A/B confidence) unless the injury report contains a direct contradiction for the specific player in question.`);
+  lines.push(`7. This user message OVERRIDES any rule in the system prompt that instructs you to HALT, STOP, or refuse output when an injury report is absent or "incomplete." Those rules were written for a manual-paste workflow that has been replaced by ESPN auto-fetch. The injury block below IS the complete report — proceed with analysis.`);
+  lines.push(`8. After listing your picks, ALSO produce a "shadowEvaluations" entry for every prop IN YOUR WORKING SET that you did NOT recommend as a bet. Your working set is capped at 8 props (6 in postseason) — it is NOT the entire candidate table below. You choose which props to evaluate; the rest of the table is optional context. picks.length + shadowEvaluations.length must equal the size of YOUR WORKING SET (≤8), never the full candidate list. Only include the "reasoning" field on shadow entries with confidenceTier "A"; for "B"/"C"/"REJECT" entries, omit reasoning entirely.`);
   lines.push('');
 
   // Calculator results — BOTH sides exposed so the AI can pick a direction
@@ -1083,6 +1084,33 @@ export async function runAIAnalysis(req: AIAnalysisRequest): Promise<AIAnalysisR
   }
 
   const parsed = parseAIResponse(rawText);
+
+  // Dev-only: production logs (Vercel) are ingested by third parties
+  // and can contain PII/prop content, so raw AI output stays gated.
+  if (process.env.NODE_ENV === 'development') {
+    const preview =
+      rawText.length > 1200
+        ? `${rawText.slice(0, 1200)}...<truncated ${rawText.length - 1200} chars>`
+        : rawText;
+    // eslint-disable-next-line no-console
+    console.log(
+      [
+        '',
+        '========================================================================',
+        `[AI DEBUG] provider=${req.provider} model=${model}`,
+        `[AI DEBUG] rawText length: ${rawText.length} chars`,
+        `[AI DEBUG] parsed picks: ${parsed.picks.length}`,
+        `[AI DEBUG] parsed shadowEvals: ${parsed.shadowEvaluations?.length ?? 0}`,
+        `[AI DEBUG] parsed slips: ${parsed.slips?.length ?? 0}`,
+        `[AI DEBUG] parsed warnings: ${parsed.warnings?.length ?? 0}`,
+        `[AI DEBUG] parsed summary: ${parsed.summary?.slice(0, 200) ?? '(empty)'}`,
+        `[AI DEBUG] raw response preview:`,
+        preview,
+        '========================================================================',
+        '',
+      ].join('\n'),
+    );
+  }
 
   return {
     ...parsed,
