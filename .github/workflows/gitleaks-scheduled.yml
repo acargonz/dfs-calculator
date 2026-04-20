@@ -68,7 +68,7 @@ jobs:
 
     steps:
       - name: Checkout (full history)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           # Full history — this is non-negotiable for a secret scanner.
           # A shallow clone would only cover the last commit and miss
